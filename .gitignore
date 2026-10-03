@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv*/
+venv/
+
+# IDE
+.vscode/*
+!.vscode/launch.json
+.idea/
+
+# NiceGUI storage (per-user settings of the browser sessions)
+.nicegui/
+
+# SRCI SDK is licensed and must NOT be published - never commit the simulator library
+*SRCI SDK*/
+*.dll
+*.so
+*.dylib
+srci_sdk_sim*
+
+# local data: logs, taught programs of the user, screenshots of test runs
+*.log
+programs/
+tests/_screens/

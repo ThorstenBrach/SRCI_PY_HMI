@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "srci-teach"
+version = "0.1.0"
+description = "Teach pendant for SRCI robots (web UI with NiceGUI on top of the srci client)"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Thorsten Brach" }]
+requires-python = ">=3.12"
+dependencies = [
+    "srci",  # SRCI_CLIENT_PY - install it first: pip install -e ..\SRCI_PY
+    "nicegui>=3.0,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "playwright>=1.45"]
+
+[project.scripts]
+srci-teach = "srci_teach.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/srci_teach"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # typographic dashes and quotes in UI texts are intended
+    "SIM117",  # with ui.button(): with ui.menu(): mirrors the element tree
+]
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 135  # nested NiceGUI layouts
+
+[tool.ruff.lint.per-file-ignores]
+"src/srci_teach/ui/theme.py" = ["E501"]  # CSS and JavaScript
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+strict = true
+ignore_missing_imports = true

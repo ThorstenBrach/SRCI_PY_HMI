@@ -1,0 +1,134 @@
+"""The robot service against the SRCI SDK simulator (skipped without the SDK library).
+
+The SDK is licensed and not part of this repository: build it in ``SRCI SDK/srci_py_harness``
+and set ``SRCI_SDK_SIM_LIB`` (see SRCI_PY).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Iterator
+
+import pytest
+from srci.types import JogMode
+
+from srci_teach.model import Motion, Program
+from srci_teach.robot import Activity, Phase, RobotService, Target
+
+sdk = pytest.importorskip("srci.sim.sdk")
+try:
+    sdk.SdkSimulator().close()
+except sdk.SdkNotAvailableError as exc:  # pragma: no cover - depends on the machine
+    pytest.skip(f"SRCI SDK simulator not available: {exc}", allow_module_level=True)
+
+
+@pytest.fixture
+def robot() -> Iterator[RobotService]:
+    r = RobotService()
+    r.connect(Target(simulator=True))
+    r.reset()
+    yield r
+    r.disconnect()
+
+
+def joints(r: RobotService) -> list[float]:
+    time.sleep(0.6)  # position is polled every 0.25 s
+    return [round(v, 1) for v in r.snapshot().joints]
+
+
+def test_connect_shows_robot_data(robot: RobotService) -> None:
+    s = robot.snapshot()
+    assert s.phase is Phase.READY
+    assert s.srci_version.startswith("1.")
+    assert s.manufacturer
+    assert s.position_valid
+    assert not s.enabled
+
+
+def test_motion_needs_enable(robot: RobotService) -> None:
+    p = Program()
+    p.add_point([0.0] * 6, [0.0] * 6)
+    with pytest.raises(Exception, match="switch the robot on"):
+        robot.move_to(p.points[0], hold=False)
+    assert robot.snapshot().error
+
+
+def test_move_to_point_and_teach(robot: RobotService) -> None:
+    robot.set_enabled(True)
+    assert robot.snapshot().enabled
+    p = Program()
+    p.add_point([10.0, 20.0, 30.0, 0.0, 45.0, 0.0], [0.0] * 6)
+    robot.move_to(p.points[0], hold=False)
+    assert joints(robot) == [10.0, 20.0, 30.0, 0.0, 45.0, 0.0]
+    j, _ = robot.current_position()
+    assert round(j[4], 1) == 45.0
+    robot.set_enabled(False)
+    assert not robot.snapshot().enabled
+
+
+def test_program_runs_all_steps_in_order(robot: RobotService) -> None:
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([0.0] * 6, [0.0] * 6, name="A")
+    p.add_point([20.0, 0, 0, 0, 0, 0], [0.0] * 6, name="B")
+    for name in "BABA":
+        p.add_step(name, Motion.JOINT, 50.0, 10.0 if name == "B" else 0.0)
+    seen: list[int] = []
+    assert robot.run_program(p, hold=False, on_step=seen.append) == 4
+    assert seen == [0, 1, 2, 3]
+    assert robot.run_program(p, 2, single_step=True, hold=False) == 3
+    assert joints(robot)[0] == 20.0
+
+
+def test_hold_to_run_stops_without_heartbeat(robot: RobotService) -> None:
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([90.0, 0, 0, 0, 0, 0], [0.0] * 6)
+    started = time.monotonic()
+    with pytest.raises(Exception, match="stopped"):
+        robot.move_to(p.points[0], hold=True)  # nobody calls alive()
+    assert time.monotonic() - started < 3.0
+    assert robot.snapshot().activity is Activity.IDLE
+
+
+def test_stop_ends_a_running_program(robot: RobotService) -> None:
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([0.0] * 6, [0.0] * 6, name="A")
+    p.add_point([30.0, 0, 0, 0, 0, 0], [0.0] * 6, name="B")
+    for name in "BABABA":
+        p.add_step(name)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            robot.run_program(p, hold=False)
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    time.sleep(1.5)
+    robot.stop()
+    worker.join(10.0)
+    assert not worker.is_alive()
+    assert errors and "stopped" in str(errors[0])
+    assert robot.snapshot().program_step < 5
+
+
+def test_jog_moves_while_held_and_watchdog_stops(robot: RobotService) -> None:
+    robot.set_enabled(True)
+    before = joints(robot)[0]
+    robot.jog_press(JogMode.JOG_AXES, 0, +1, 50.0)
+    for _ in range(8):
+        robot.alive()
+        time.sleep(0.1)
+    robot.release()
+    after = joints(robot)[0]
+    assert after > before
+    robot.jog_press(JogMode.JOG_AXES, 0, +1, 50.0)
+    time.sleep(1.2)  # no heartbeat
+    assert robot.snapshot().activity is Activity.IDLE
+    stopped = joints(robot)[0]
+    assert joints(robot)[0] == stopped

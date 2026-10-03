@@ -1,0 +1,585 @@
+"""Robot service: one SRCI connection, used by all browser tabs of the teach pendant.
+
+The UI never talks to :class:`srci.api.SrciClient` directly. This service
+
+* opens the connection (PLC gateway over TCP, or the SRCI SDK simulator for a dry run),
+* runs commands one after the other (``_busy`` lock) - except :meth:`stop`, which always
+  goes through at once,
+* keeps the actual position up to date (``ReadActualPositionCyclic``, fallback: polling with
+  ``ReadActualPosition``),
+* jogs with hold-to-run: a jog key moves only while the browser keeps sending
+  :meth:`jog_alive`; without it for :data:`JOG_WATCHDOG` s the jog stops (closed tab, lost
+  network, crashed browser),
+* runs programs (:mod:`srci_teach.model`) step by step or continuously.
+
+All methods block (they wait for the robot) - call them from a worker thread
+(``nicegui.run.io_bound``). :meth:`snapshot` is cheap and can be called from the UI timer.
+
+SRCI is no safety interface: the emergency stop of the robot stays the only safe stop.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import threading
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
+
+from srci.api import CommandError, SrciClient, WaitTimeoutError
+from srci.errors import SrciError
+from srci.fb import (
+    MC_ChangeSpeedOverrideFB,
+    MC_EnableRobotFB,
+    MC_GroupJogFB,
+    MC_GroupResetFB,
+    MC_GroupStopFB,
+    MC_MoveAxesAbsoluteFB,
+    MC_MoveLinearAbsoluteFB,
+    MC_ReadActualPositionCyclicFB,
+    MC_ReadActualPositionFB,
+)
+from srci.transport import TcpTransport
+from srci.transport.base import Transport
+from srci.types import (
+    ArmConfigElbow,
+    ArmConfigShoulder,
+    ArmConfigWrist,
+    BlendingMode,
+    JogMode,
+    MessageLevel,
+    TurnMode,
+)
+
+from srci_teach.model import CARTESIAN, JOINTS, Motion, Point, Program, Step
+
+log = logging.getLogger("srci_teach.robot")
+
+JOG_WATCHDOG = 0.5  # s without jog_alive() -> the jog stops
+JOG_AXES = ("X_J1", "Y_J2", "Z_J3", "Rx_J4", "Ry_J5", "Rz_J6")
+
+
+class Phase(StrEnum):
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    READY = "ready"  # initialized, commands enabled
+    LOST = "lost"  # was ready, the RobotTask is no longer initialized
+    FAILED = "failed"  # connection or initialization failed
+
+
+class Activity(StrEnum):
+    IDLE = "idle"
+    JOGGING = "jogging"
+    MOVING = "moving"  # single motion (move to point)
+    RUNNING = "running"  # program
+
+
+@dataclass
+class Target:
+    """Where to connect to."""
+
+    host: str = "192.168.2.10"
+    port: int = 5000
+    length: int = 256  # telegram length per direction = size of the PROFINET module
+    simulator: bool = False  # SRCI SDK simulator behind a local gateway (needs SRCI_SDK_SIM_LIB)
+    lifesign_ms: int = 100
+
+
+@dataclass
+class Message:
+    severity: str
+    code: int
+    text: str
+
+
+@dataclass
+class Snapshot:
+    """Everything the UI shows, read in one go."""
+
+    phase: Phase = Phase.DISCONNECTED
+    activity: Activity = Activity.IDLE
+    target: str = ""
+    error: str = ""  # last error of a command of this service
+    enabled: bool = False
+    moving: bool = False
+    error_pending: bool = False
+    operation_mode: str = ""
+    override: float = 0.0
+    joints: list[float] = field(default_factory=lambda: [0.0] * 6)
+    cartesian: list[float] = field(default_factory=lambda: [0.0] * 6)
+    position_valid: bool = False
+    manufacturer: str = ""
+    robot: str = ""
+    firmware: str = ""
+    srci_version: str = ""
+    messages: list[Message] = field(default_factory=list)
+    program_step: int = -1  # index of the running / last started step
+    simulator: bool = False
+
+
+class RobotService:
+    """The connection to one robot (thread safe)."""
+
+    def __init__(self) -> None:
+        self._client: SrciClient | None = None
+        self._transport: Transport | None = None
+        self._stack = contextlib.ExitStack()
+        self._target = Target()
+        self._phase = Phase.DISCONNECTED
+        self._activity = Activity.IDLE
+        self._error = ""
+        self._busy = threading.RLock()  # one command sequence at a time (not stop)
+        self._state = threading.Lock()  # phase / activity / error
+        self._poll_lock = threading.Lock()  # one ReadActualPosition at a time
+        self._enable: MC_EnableRobotFB | None = None
+        self._cyclic: MC_ReadActualPositionCyclicFB | None = None
+        self._polled: Any = None  # OutCmd of the last ReadActualPosition (fallback)
+        self._jog: MC_GroupJogFB | None = None
+        self._jog_alive = 0.0  # last heartbeat of the held key (jog, move, program)
+        self._hold = False  # a motion runs that needs the heartbeat (hold-to-run)
+        self._stop_event = threading.Event()  # set by stop(): a running program ends
+        self._program_step = -1
+        self._watchdog: threading.Thread | None = None
+        self._closing = threading.Event()
+        self.override = 20.0
+        self.listeners: list[Callable[[], None]] = []  # called after a change of phase / activity
+
+    # ------------------------------------------------------------------ state
+
+    def _set(self, *, phase: Phase | None = None, activity: Activity | None = None,
+             error: str | None = None) -> None:  # fmt: skip
+        with self._state:
+            if phase is not None:
+                self._phase = phase
+            if activity is not None:
+                self._activity = activity
+            if error is not None:
+                self._error = error
+        for listener in list(self.listeners):
+            with contextlib.suppress(Exception):
+                listener()
+
+    @property
+    def connected(self) -> bool:
+        return self._client is not None and self._phase == Phase.READY
+
+    @property
+    def client(self) -> SrciClient:
+        if self._client is None:
+            raise SrciError("not connected")
+        return self._client
+
+    def snapshot(self) -> Snapshot:
+        s = Snapshot(phase=self._phase, activity=self._activity, error=self._error,
+                     program_step=self._program_step, simulator=self._target.simulator)  # fmt: skip
+        t = self._target
+        s.target = "SDK simulator" if t.simulator else f"{t.host}:{t.port}"
+        client = self._client
+        if client is None:
+            return s
+        program = client.program
+        if self._phase == Phase.READY and not program.initialized:
+            self._set(phase=Phase.LOST, error="RobotTask no longer initialized (LifeSign / connection)")
+            s.phase = Phase.LOST
+        ag = program.axes_group
+        status = ag.State.StatusRobotArm
+        enable = self._enable  # EnableRobot of this service (the status bit of the RC may lag)
+        s.enabled = enable is not None and bool(enable.Enabled)
+        s.moving = bool(status.IsMoving)
+        s.error_pending = bool(status.ErrorPending)
+        s.operation_mode = status.OperationMode.name
+        s.override = self.override
+        data = ag.State.RobotData
+        s.manufacturer = data.RCManufacturer.strip()
+        s.robot = data.RobotID.strip() or data.RCOrderID.strip()
+        s.firmware = data.RCFirmwareVersion.strip()
+        v = ag.Cyclic.RobToPlc.SRCIVersion
+        s.srci_version = f"{v.MajorVersion}.{v.MinorVersion}" if v.MajorVersion else ""
+        joints, cartesian, valid = self._position()
+        s.joints, s.cartesian, s.position_valid = joints, cartesian, valid
+        s.messages = [Message(m.Severity.name, int(m.MessageCode), m.MessageText)
+                      for m in program.message_log if m.MessageCode][:50]  # fmt: skip
+        return s
+
+    def _position(self) -> tuple[list[float], list[float], bool]:
+        cyc = self._cyclic
+        if cyc is not None and not cyc.Error and cyc.OutCmd.ReadingJointPosition:
+            j, c = cyc.OutCmd.JointPosition, cyc.OutCmd.CartesianPosition
+            return [getattr(j, n) for n in JOINTS], [getattr(c, n) for n in CARTESIAN], True
+        out = self._polled
+        if out is not None:
+            j, c = out.ActualJointPosition, out.ActualCartesianPosition
+            return [getattr(j, n) for n in JOINTS], [getattr(c, n) for n in CARTESIAN], True
+        return [0.0] * 6, [0.0] * 6, False
+
+    # ------------------------------------------------------------------ connection
+
+    def connect(self, target: Target) -> None:
+        """Open the connection and wait until the RobotTask is initialized (raises on failure)."""
+        with self._busy:
+            self.disconnect()
+            self._target = target
+            self._closing.clear()
+            self._set(phase=Phase.CONNECTING, activity=Activity.IDLE, error="")
+            try:
+                self._open(target)
+                client = self.client
+                client.wait_initialized(timeout=15.0)
+                self._start_position(client)
+            except BaseException as exc:
+                self._set(phase=Phase.FAILED, error=_text(exc))
+                self._close()
+                raise
+            self._set(phase=Phase.READY)
+            self._watchdog = threading.Thread(target=self._watch, name="srci-teach-watchdog", daemon=True)
+            self._watchdog.start()
+
+    def _open(self, target: Target) -> None:
+        n = target.length
+        if target.simulator:
+            from srci.sim.gateway import PlcGatewaySimulator
+            from srci.sim.sdk import SdkSimulator
+
+            sim = self._stack.enter_context(SdkSimulator())
+            sim.set_move_cycles(100)  # simulated motions take about 1 s
+            gateway = self._stack.enter_context(
+                PlcGatewaySimulator(lambda telegram: sim.exchange(telegram, n), n, n)
+            )
+            transport: Transport = TcpTransport("127.0.0.1", gateway.port, n, n, response_timeout=0.5)
+        else:
+            # the PLC answers within a few PLC cycles; a late answer closes the connection
+            transport = TcpTransport(target.host, target.port, n, n, response_timeout=0.1)
+        self._transport = self._stack.enter_context(transport)
+        client = SrciClient(transport)
+        cfg = client.program.config
+        cfg.Com.LifeSignTimeOut = target.lifesign_ms
+        cfg.Rob.Parameter.MessageLevel = MessageLevel.WARNING
+        self._client = client
+
+    def _start_position(self, client: SrciClient) -> None:
+        cyc = MC_ReadActualPositionCyclicFB()
+        cyc.ParCmd.ReadJointPosition = True
+        cyc.ParCmd.ReadCartesianPosition = True
+        try:
+            client.enable(cyc, timeout=3.0)
+            self._cyclic = cyc
+        except (CommandError, WaitTimeoutError) as exc:
+            log.info("ReadActualPositionCyclic not available (%s) - polling ReadActualPosition", exc)
+            with contextlib.suppress(Exception):
+                client.remove(cyc)
+            self._cyclic = None
+            self._poll_position()
+
+    def _poll_position(self) -> None:
+        client = self._client
+        if client is None or self._phase not in (Phase.READY, Phase.CONNECTING):
+            return
+        with self._poll_lock, contextlib.suppress(CommandError, WaitTimeoutError, SrciError):
+            self._polled = client.execute(MC_ReadActualPositionFB(), timeout=2.0).OutCmd
+
+    def disconnect(self) -> None:
+        """Robot off (if possible) and close the connection."""
+        self._closing.set()
+        self._stop_event.set()
+        with self._busy:
+            if self._client is not None and self._phase == Phase.READY:
+                with contextlib.suppress(Exception):
+                    self._jog_off()
+                if self._enable is not None:
+                    with contextlib.suppress(Exception):
+                        self._client.disable(self._enable, timeout=3.0)
+            self._close()
+            self._set(phase=Phase.DISCONNECTED, activity=Activity.IDLE)
+
+    def _close(self) -> None:
+        if self._client is not None:
+            with contextlib.suppress(Exception):
+                self._client.close()
+        with contextlib.suppress(Exception):
+            self._stack.close()
+        self._stack = contextlib.ExitStack()
+        self._client = self._transport = None
+        self._enable = self._cyclic = self._jog = None
+        self._polled = None
+
+    def _watch(self) -> None:
+        """Jog watchdog and position polling (fallback without ReadActualPositionCyclic)."""
+        last_poll = 0.0
+        while not self._closing.wait(0.05):
+            jog = self._jog
+            silent = time.monotonic() - self._jog_alive > JOG_WATCHDOG
+            if jog is not None and silent:
+                log.warning("jog stopped: no heartbeat for %.1f s", JOG_WATCHDOG)
+                with contextlib.suppress(Exception):
+                    self.jog_release()
+            if self._hold and silent:
+                log.warning("motion stopped: key released or no heartbeat for %.1f s", JOG_WATCHDOG)
+                self._hold = False
+                with contextlib.suppress(Exception):
+                    self.stop()
+            # ReadActualPosition runs on the RC in parallel to motions and jogging: the display
+            # follows the robot also while a program runs
+            if self._cyclic is None and time.monotonic() - last_poll > 0.25:
+                self._poll_position()
+                last_poll = time.monotonic()
+
+    # ------------------------------------------------------------------ commands
+
+    @contextlib.contextmanager
+    def _command(self, what: str, activity: Activity | None = None) -> Iterator[SrciClient]:
+        if not self._busy.acquire(timeout=0.2):
+            raise SrciError(f"{what}: another command is running")
+        try:
+            client = self.client
+            if self._phase != Phase.READY:
+                raise SrciError(f"{what}: not connected")
+            if activity is not None:
+                self._set(activity=activity, error="")
+            try:
+                yield client
+            except BaseException as exc:
+                self._set(error=f"{what}: {_text(exc)}")
+                raise
+            finally:
+                if activity is not None:
+                    self._set(activity=Activity.IDLE)
+        finally:
+            self._busy.release()
+
+    def reset(self) -> None:
+        """GroupReset: acknowledge errors of the robot."""
+        with self._command("GroupReset") as client:
+            client.execute(MC_GroupResetFB(), timeout=10.0)
+            self._set(error="")
+
+    def set_enabled(self, on: bool) -> None:
+        """Switch the robot on (EnableRobot) or off."""
+        with self._command("EnableRobot") as client:
+            if on:
+                if self._enable is None:
+                    enable = MC_EnableRobotFB()
+                    try:
+                        client.enable(enable, timeout=15.0)
+                    except BaseException:
+                        with contextlib.suppress(Exception):
+                            client.disable(enable, timeout=3.0)
+                        raise
+                    self._enable = enable
+                    self._apply_override(client)
+            elif self._enable is not None:
+                enable, self._enable = self._enable, None
+                client.disable(enable, timeout=10.0)
+
+    def set_override(self, percent: float) -> None:
+        """Speed override of all motions [%]."""
+        if not 0.0 < percent <= 100.0:
+            raise ValueError(f"override {percent} outside 0 < x <= 100")
+        self.override = float(percent)
+        if self.connected:
+            with self._command("ChangeSpeedOverride") as client:
+                self._apply_override(client)
+
+    def _apply_override(self, client: SrciClient) -> None:
+        fb = MC_ChangeSpeedOverrideFB()
+        fb.ParCmd.Override = self.override
+        client.execute(fb, timeout=5.0)
+
+    def stop(self) -> None:
+        """Stop everything at once: jog off, end a running program, GroupStop. Does not wait for
+        a running command (no ``_busy``)."""
+        self._stop_event.set()
+        client = self._client
+        if client is None:
+            return
+        with contextlib.suppress(Exception):
+            self._jog_off()
+        try:
+            client.execute(MC_GroupStopFB(), timeout=5.0, check=False)
+        except (SrciError, WaitTimeoutError) as exc:
+            self._set(error=f"GroupStop: {_text(exc)}")
+            raise
+
+    # ------------------------------------------------------------------ jog
+
+    def jog_press(self, mode: JogMode, axis: int, direction: int, speed: float,
+                  increment: float = 0.0, tool: int = 0, frame: int = 0) -> None:  # fmt: skip
+        """Start jogging ``axis`` (0..5: X/J1 .. Rz/J6) in ``direction`` (+1 / -1) with ``speed`` %
+        of the jog velocity. ``increment`` > 0: move only this distance [mm or deg] (step jog).
+        The motion continues only while :meth:`jog_alive` is called (hold-to-run)."""
+        if axis not in range(6) or direction not in (1, -1):
+            raise ValueError("axis 0..5, direction +1/-1")
+        self._jog_alive = time.monotonic()
+        with self._command("GroupJog") as client:
+            if self._enable is None:
+                raise SrciError("GroupJog: switch the robot on first")
+            self._jog_off()
+            jog = MC_GroupJogFB()
+            par = jog.ParCmd
+            par.Mode, par.Override, par.ToolNo, par.FrameNo = mode, float(speed), tool, frame
+            if increment > 0.0:
+                if mode == JogMode.JOG_AXES or axis >= 3:
+                    par.IncrementalRotation = float(increment)
+                else:
+                    par.IncrementalTranslation = float(increment)
+            setattr(par.Control, f"{JOG_AXES[axis]}_{'Pos' if direction > 0 else 'Neg'}", True)
+            self._set(activity=Activity.JOGGING, error="")
+            self._jog = jog
+            try:
+                client.enable(jog, timeout=3.0)
+            except BaseException as exc:
+                self._jog = None
+                with contextlib.suppress(Exception):
+                    client.disable(jog, timeout=2.0)
+                self._set(activity=Activity.IDLE, error=f"GroupJog: {_text(exc)}")
+                raise
+
+    def jog_alive(self) -> None:
+        """Heartbeat of a held key - jog, move to point, program with ``hold`` (call every
+        100..200 ms while the key is held)."""
+        self._jog_alive = time.monotonic()
+
+    alive = jog_alive
+
+    def release(self) -> None:
+        """A held key was released: jog off, a hold-to-run motion stops."""
+        self._jog_off()
+        if self._hold:
+            self._hold = False
+            self.stop()
+
+    def jog_release(self) -> None:
+        """Jog key released."""
+        self._jog_off()
+
+    def _jog_off(self) -> None:
+        jog, self._jog = self._jog, None
+        if jog is None:
+            return
+        try:
+            if self._client is not None:
+                self._client.disable(jog, timeout=3.0)
+        finally:
+            if self._activity == Activity.JOGGING:
+                self._set(activity=Activity.IDLE)
+
+    # ------------------------------------------------------------------ teach
+
+    def current_position(self) -> tuple[list[float], list[float]]:
+        """The actual joint and Cartesian position (fresh, for teaching)."""
+        if self._cyclic is None:
+            if not self.connected:
+                raise SrciError("not connected")
+            self._poll_position()
+        joints, cartesian, valid = self._position()
+        if not valid:
+            raise SrciError("no actual position available")
+        return joints, cartesian
+
+    def move_to(self, point: Point, motion: Motion = Motion.JOINT, velocity: float = 20.0,
+                *, hold: bool = True) -> None:  # fmt: skip
+        """Move to a taught point (exact stop) and wait until it is reached. ``hold``: the
+        motion continues only while :meth:`alive` is called (hold-to-run)."""
+        self._stop_event.clear()
+        with self._command(f"Move to {point.name}", Activity.MOVING) as client:
+            self._require_enabled()
+            fb = _motion_block(Step(point.name, motion, velocity), point)
+            self._start_hold(hold)
+            try:
+                client.start(fb)
+                self._wait_motion(client, fb, 120.0)
+            finally:
+                self._hold = False
+
+    def run_program(self, program: Program, start: int = 0, *, single_step: bool = False,
+                    hold: bool = True, on_step: Callable[[int], None] | None = None) -> int:  # fmt: skip
+        """Run the steps of ``program`` from index ``start``. Motions are sent ahead (up to two
+        in the queue of the RC), so steps with blending are blended. ``single_step``: only one
+        step. Returns the index of the next step (``len(steps)`` at the end)."""
+        steps = program.steps
+        if not 0 <= start < len(steps):
+            raise ValueError(f"step {start} does not exist")
+        self._stop_event.clear()
+        end = start + 1 if single_step else len(steps)
+        with self._command(f"Program {program.name}", Activity.RUNNING) as client:
+            self._require_enabled()
+            pending: list[tuple[int, Any]] = []
+            index = start
+            self._start_hold(hold)
+            try:
+                while index < end or pending:
+                    # keep up to two motions on the RC: the next one is known while one moves
+                    while index < end and len(pending) < 2 and not self._stop_event.is_set():
+                        step = steps[index]
+                        fb = _motion_block(step, program.point(step.point))
+                        client.start(fb)
+                        pending.append((index, fb))
+                        index += 1
+                    if self._stop_event.is_set():
+                        raise SrciError("stopped")
+                    i, fb = pending[0]
+                    self._program_step = i
+                    if on_step is not None:
+                        on_step(i)
+                    self._wait_motion(client, fb, 300.0)
+                    pending.pop(0)
+            except BaseException:
+                for _, fb in pending:
+                    with contextlib.suppress(Exception):
+                        client.remove(fb)
+                raise
+            finally:
+                self._hold = False
+            return index
+
+    def _start_hold(self, hold: bool) -> None:
+        self._jog_alive = time.monotonic()
+        self._hold = hold
+
+    def _require_enabled(self) -> None:
+        if self._enable is None:
+            raise SrciError("switch the robot on first")
+
+    def _wait_motion(self, client: SrciClient, fb: Any, timeout: float) -> None:
+        def finished() -> bool:
+            return bool(fb.Done or fb.Error or fb.CommandAborted or self._stop_event.is_set())
+
+        client.run_until(finished, timeout, f"{type(fb).__name__} Done")
+        if self._stop_event.is_set() and not fb.Done:
+            with contextlib.suppress(Exception):
+                client.wait_done(fb, timeout=5.0, check=False)
+            raise SrciError("stopped")
+        client.wait_done(fb, timeout=5.0)
+
+
+def _motion_block(step: Step, point: Point) -> Any:
+    fb: Any
+    if step.motion == Motion.LINEAR:
+        fb = MC_MoveLinearAbsoluteFB()
+        pos = fb.ParCmd.Position
+        for name, value in zip(CARTESIAN, point.cartesian, strict=True):
+            setattr(pos, name, value)
+        fb.ParCmd.ToolNo, fb.ParCmd.FrameNo = point.tool, point.frame
+        # the JAKA MiniCobo accepts only TurnMode FREE (see SRCI_PY examples/jaka_minicobo)
+        fb.ParCmd.TurnMode = TurnMode.FREE
+        cm = fb.ParCmd.ConfigMode
+        cm.Shoulder, cm.Elbow, cm.Wrist = ArmConfigShoulder.FREE, ArmConfigElbow.FREE, ArmConfigWrist.FREE
+    else:
+        fb = MC_MoveAxesAbsoluteFB()
+        jp = fb.ParCmd.JointPosition
+        for name, value in zip(JOINTS, point.joints, strict=True):
+            setattr(jp, name, value)
+    fb.ParCmd.VelocityRate = step.velocity
+    if step.exact_stop:
+        fb.ParCmd.BlendingMode = BlendingMode.EXACT_STOP
+    else:
+        fb.ParCmd.BlendingMode = BlendingMode.CORNER_DISTANCE
+        fb.ParCmd.BlendingParameter[0] = step.blending
+    return fb
+
+
+def _text(exc: BaseException) -> str:
+    text = str(exc) or type(exc).__name__
+    return text.replace("\n", " ")[:300]
