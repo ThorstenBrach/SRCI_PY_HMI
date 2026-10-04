@@ -336,7 +336,7 @@ class RobotService:
             transport = TcpTransport(target.host, target.port, n, n, response_timeout=0.1)
         self._transport = self._stack.enter_context(transport)
         client = SrciClient(transport)
-        cfg = client.program.config
+        cfg = client.program.ParCfg
         cfg.Com.LifeSignTimeOut = target.lifesign_ms
         cfg.Rob.Parameter.MessageLevel = MessageLevel.WARNING
         if self.plc_log:
