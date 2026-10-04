@@ -418,7 +418,12 @@ class RobotService:
             self._jog_off()
             jog = MC_GroupJogFB()
             par = jog.ParCmd
-            par.Mode, par.Override, par.ToolNo, par.FrameNo = mode, float(speed), tool, frame
+            par.Mode, par.Override, par.ToolNo, par.FrameNo = (
+                mode,
+                min(100, max(1, round(speed))),
+                tool,
+                frame,
+            )
             if increment > 0.0:
                 if mode == JogMode.JOG_AXES or axis >= 3:
                     par.IncrementalRotation = float(increment)

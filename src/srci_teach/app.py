@@ -8,6 +8,8 @@ import logging
 import secrets
 from pathlib import Path
 
+from srci_teach.i18n import t
+from srci_teach.model import Program
 from srci_teach.robot import RobotService, Target
 
 log = logging.getLogger("srci_teach")
@@ -44,6 +46,7 @@ def main(argv: list[str] | None = None) -> None:
     ws = Workspace(
         robot=robot,
         programs_dir=args.programs.resolve(),
+        program=Program(t("prog.default")),
         target=Target(host=args.robot, port=args.robot_port, length=args.length, simulator=args.simulator),
     )
 

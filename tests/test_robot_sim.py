@@ -6,6 +6,7 @@ and set ``SRCI_SDK_SIM_LIB`` (see SRCI_PY).
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections.abc import Iterator
@@ -132,3 +133,30 @@ def test_jog_moves_while_held_and_watchdog_stops(robot: RobotService) -> None:
     assert robot.snapshot().activity is Activity.IDLE
     stopped = joints(robot)[0]
     assert joints(robot)[0] == stopped
+
+
+def test_motion_after_stop_reset_and_jog(robot: RobotService) -> None:
+    """After GroupStop + GroupReset and after a jog the next motion runs (SRCI_PY F76, harness)."""
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([0.0] * 6, [0.0] * 6, name="A")
+    p.add_point([40.0, 0, 0, 0, 0, 0], [0.0] * 6, name="B")
+    worker = threading.Thread(target=lambda: _quiet(robot.move_to, p.point("B"), hold=False))
+    worker.start()
+    time.sleep(0.4)
+    robot.stop()
+    worker.join(10.0)
+    robot.reset()
+    robot.move_to(p.point("A"), hold=False)
+    robot.jog_press(JogMode.JOG_AXES, 1, +1, 50.0)
+    for _ in range(5):
+        robot.alive()
+        time.sleep(0.1)
+    robot.release()
+    robot.move_to(p.point("B"), hold=False)
+    assert joints(robot)[:2] == [40.0, 0.0]
+
+
+def _quiet(fn: object, *args: object, **kwargs: object) -> None:
+    with contextlib.suppress(Exception):
+        fn(*args, **kwargs)  # type: ignore[operator]

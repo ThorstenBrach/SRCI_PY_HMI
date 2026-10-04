@@ -189,7 +189,9 @@ class Pendant:
 
     def build(self) -> None:
         ui.colors(**COLORS)
-        ui.add_css(CSS)
+        # layer "overrides" of NiceGUI: comes before "quasar_importants", so the !important rules of
+        # the theme win against Quasar's color classes (bg-primary, text-primary are !important)
+        ui.add_css("@layer overrides {\n" + CSS + "\n}")
         ui.add_head_html(HOLD_JS)
         ui.add_head_html('<meta name="theme-color" content="#F2F2F7">')
         dark = ui.dark_mode()
@@ -366,7 +368,7 @@ class Pendant:
                 ui.button(self.tr("power.enable"), on_click=lambda: self.set_power(True)).props(
                     "unelevated no-caps color=primary dense"
                 ).classes("px-4")
-            with ui.element("div").classes("grid w-full gap-5 lg:grid-cols-[1.5fr_1fr]"):
+            with ui.element("div").classes("grid w-full gap-5 items-start lg:grid-cols-[1.5fr_1fr]"):
                 with self.card():
                     for i in range(6):
                         with ui.element("div").classes("tp-axis"):
@@ -459,7 +461,7 @@ class Pendant:
                     ui.button(self.tr("prog.save"), icon="save", on_click=self.save).props(
                         "unelevated no-caps color=primary"
                     )
-            with ui.element("div").classes("grid w-full gap-5 lg:grid-cols-2"):
+            with ui.element("div").classes("grid w-full gap-5 items-start lg:grid-cols-2"):
                 with self.card(self.tr("prog.points")):
                     self.draw_points()
                 with self.card(self.tr("prog.steps")):
@@ -528,7 +530,9 @@ class Pendant:
                 move.on("pointerdown", lambda _, n=point.name: self.move_to(n, Motion.JOINT))
                 ui.button(icon="playlist_add", on_click=lambda n=point.name: self.add_step(n)).props(
                     "flat round dense"
-                ).classes("text-[var(--blue)]").tooltip(self.tr("point.add_step"))
+                ).classes("text-[var(--blue)]").tooltip(self.tr("point.add_step")).mark(
+                    f"add-step-{point.name}"
+                )
                 with ui.button(icon="more_horiz").props("flat round dense").classes("text-[var(--text-2)]"):
                     with ui.menu():
                         ui.menu_item(
@@ -645,7 +649,7 @@ class Pendant:
     async def new_program(self) -> None:
         if self.ws.dirty and not await self.confirm(self.tr("prog.new_confirm")):
             return
-        self.ws.program = Program()
+        self.ws.program = Program(self.tr("prog.default"))
         self.ws.path, self.ws.dirty = None, False
         self.ws.revision += 1
         self.from_step = 0
@@ -760,8 +764,8 @@ class Pendant:
         # jog page
         self.jog_banner.set_visibility(ready and not s.enabled)
         can_jog = ready and s.enabled and s.activity in (Activity.IDLE, Activity.JOGGING)
-        for key in self.jog_keys:
-            self.put(key, "classes", "tp-key-btn" if can_jog else "tp-key-btn disabled")
+        for jog_key in self.jog_keys:
+            self.put(jog_key, "classes", "tp-key-btn" if can_jog else "tp-key-btn disabled")
         axes = self.jog_mode == "axes"
         values = s.joints if axes else s.cartesian
         for i, (label, bar) in enumerate(zip(self.axis_values, self.axis_bars, strict=True)):

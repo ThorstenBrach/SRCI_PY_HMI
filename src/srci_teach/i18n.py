@@ -101,6 +101,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "de": "Noch keine Schritte. Bei einem Punkt auf „+“ tippen.",
         "en": "No steps yet. Tap “+” on a point.",
     },
+    "prog.default": {"de": "Neues Programm", "en": "New program"},
     "prog.name": {"de": "Programmname", "en": "Program name"},
     "prog.save": {"de": "Sichern", "en": "Save"},
     "prog.saved": {"de": "Gesichert: {path}", "en": "Saved: {path}"},
