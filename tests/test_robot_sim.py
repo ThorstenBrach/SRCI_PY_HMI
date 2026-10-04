@@ -14,8 +14,8 @@ from collections.abc import Iterator
 import pytest
 from srci.types import JogMode
 
-from srci_teach.model import Motion, Program
-from srci_teach.robot import Activity, Phase, RobotService, Target
+from srci_py_hmi.model import Motion, Program
+from srci_py_hmi.robot import Activity, Phase, RobotService, Target
 
 sdk = pytest.importorskip("srci.sim.sdk")
 try:
@@ -163,7 +163,7 @@ def _quiet(fn: object, *args: object, **kwargs: object) -> None:
 
 
 def test_tools_and_frames(robot: RobotService) -> None:
-    from srci_teach.robot import CoordData
+    from srci_py_hmi.robot import CoordData
 
     s = robot.snapshot()
     assert s.highest_tool >= 1 and s.highest_frame >= 1
@@ -193,7 +193,7 @@ def test_all_motion_types_with_dynamics(robot: RobotService) -> None:
 
 def test_functions_the_rc_does_not_report_are_refused(robot: RobotService) -> None:
     """RCSupportedFunctions: a motion type / jog the RC does not report is not sent at all."""
-    from srci_teach.robot import NotSupportedError
+    from srci_py_hmi.robot import NotSupportedError
 
     s = robot.snapshot()
     assert s.supported is not None and s.can("MoveDirectAbsolute")

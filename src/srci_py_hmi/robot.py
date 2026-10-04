@@ -10,7 +10,7 @@ The UI never talks to :class:`srci.api.SrciClient` directly. This service
 * jogs with hold-to-run: a jog key moves only while the browser keeps sending
   :meth:`jog_alive`; without it for :data:`JOG_WATCHDOG` s the jog stops (closed tab, lost
   network, crashed browser),
-* runs programs (:mod:`srci_teach.model`) step by step or continuously.
+* runs programs (:mod:`srci_py_hmi.model`) step by step or continuously.
 
 All methods block (they wait for the robot) - call them from a worker thread
 (``nicegui.run.io_bound``). :meth:`snapshot` is cheap and can be called from the UI timer.
@@ -64,9 +64,9 @@ from srci.types import (
     TurnMode,
 )
 
-from srci_teach.model import CARTESIAN, JOINTS, Motion, Point, Program, Step
+from srci_py_hmi.model import CARTESIAN, JOINTS, Motion, Point, Program, Step
 
-log = logging.getLogger("srci_teach.robot")
+log = logging.getLogger("srci_py_hmi.robot")
 
 # functions of the profile "Core" (spec chapter 6) - shown on the connection page
 CORE_FUNCTIONS = (
@@ -316,7 +316,7 @@ class RobotService:
                 self._close()
                 raise
             self._set(phase=Phase.READY)
-            self._watchdog = threading.Thread(target=self._watch, name="srci-teach-watchdog", daemon=True)
+            self._watchdog = threading.Thread(target=self._watch, name="srci-hmi-watchdog", daemon=True)
             self._watchdog.start()
 
     def _open(self, target: Target) -> None:
@@ -787,7 +787,7 @@ def _motion_block(step: Step, point: Point) -> Any:
         for name, value in zip(CARTESIAN, point.cartesian, strict=True):
             setattr(pos, name, value)
         fb.ParCmd.ToolNo, fb.ParCmd.FrameNo = point.tool, point.frame
-        # the JAKA MiniCobo accepts only TurnMode FREE / ConfigMode FREE (SRCI_PY examples/jaka_minicobo)
+        # the JAKA MiniCobo accepts TurnMode only FREE, ConfigMode SAME or FREE (SRCI_PY examples/jaka_minicobo)
         fb.ParCmd.TurnMode = TurnMode.FREE
         cm = fb.ParCmd.ConfigMode
         cm.Shoulder, cm.Elbow, cm.Wrist = ArmConfigShoulder.FREE, ArmConfigElbow.FREE, ArmConfigWrist.FREE

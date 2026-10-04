@@ -1,4 +1,4 @@
-"""Points, steps and JSON of :mod:`srci_teach.model` (no robot)."""
+"""Points, steps and JSON of :mod:`srci_py_hmi.model` (no robot)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from srci_teach.model import Motion, Program
+from srci_py_hmi.model import Motion, Program
 
 J = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 C = [100.0, 200.0, 300.0, 180.0, 0.0, 90.0]

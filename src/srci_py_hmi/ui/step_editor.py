@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING, Any
 
 from nicegui import ui
 
-from srci_teach.model import BLENDING_MODES, BLENDING_UNITS, DEFAULT, Motion, Step
-from srci_teach.robot import MOTION_FUNCTIONS
+from srci_py_hmi.model import BLENDING_MODES, BLENDING_UNITS, DEFAULT, Motion, Step
+from srci_py_hmi.robot import MOTION_FUNCTIONS
 
 if TYPE_CHECKING:
-    from srci_teach.ui.pendant import Pendant
+    from srci_py_hmi.ui.pendant import Pendant
 
 DYNAMICS = ("velocity", "acceleration", "deceleration", "jerk")
 DYN_KEYS = {

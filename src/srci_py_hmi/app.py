@@ -1,4 +1,4 @@
-"""Start the teach pendant: ``srci-teach`` (or ``python -m srci_teach``)."""
+"""Start the teach pendant: ``srci-hmi`` (or ``python -m srci_py_hmi``)."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ import logging
 import secrets
 from pathlib import Path
 
-from srci_teach.i18n import t
-from srci_teach.model import Program
-from srci_teach.robot import RobotService, Target
+from srci_py_hmi.i18n import t
+from srci_py_hmi.model import Program
+from srci_py_hmi.robot import RobotService, Target
 
-log = logging.getLogger("srci_teach")
+log = logging.getLogger("srci_py_hmi")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="srci-teach", description="Teach pendant for SRCI robots (web UI)")
+    p = argparse.ArgumentParser(prog="srci-hmi", description="Teach pendant for SRCI robots (web UI)")
     p.add_argument("--host", default="127.0.0.1",
                    help="address of the web server (0.0.0.0: reachable from a tablet in the network - "
                         "everybody who reaches the port can move the robot)")  # fmt: skip
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> None:
         logging.getLogger("srci").setLevel(logging.DEBUG)
     from nicegui import app, ui
 
-    from srci_teach.ui.pendant import Pendant, Workspace
+    from srci_py_hmi.ui.pendant import Pendant, Workspace
 
     robot = RobotService(plc_log=args.log is not None)
     ws = Workspace(
@@ -72,7 +72,11 @@ def main(argv: list[str] | None = None) -> None:
         Pendant(ws).build()
 
     app.on_shutdown(robot.disconnect)
-    secret_file = Path.home() / ".srci_teach_secret"
+    secret_file = Path.home() / ".srci_py_hmi_secret"
+    old_secret_file = Path.home() / ".srci_teach_secret"  # name before the rename (keeps the settings)
+    if not secret_file.exists() and old_secret_file.exists():
+        with contextlib.suppress(OSError):
+            secret_file.write_text(old_secret_file.read_text())
     try:
         secret = secret_file.read_text().strip()
     except OSError:
@@ -82,7 +86,7 @@ def main(argv: list[str] | None = None) -> None:
     ui.run(
         host=args.host,
         port=args.port,
-        title="SRCI Teach",
+        title="SRCI PY HMI",
         favicon="🦾",
         storage_secret=secret,
         reload=False,

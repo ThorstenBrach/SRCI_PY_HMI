@@ -11,9 +11,9 @@ from typing import Any
 from nicegui import app, background_tasks, run, ui
 from srci.types import JogMode
 
-from srci_teach.i18n import LANGUAGES, t
-from srci_teach.model import CARTESIAN, JOINTS, Motion, Program
-from srci_teach.robot import (
+from srci_py_hmi.i18n import LANGUAGES, t
+from srci_py_hmi.model import CARTESIAN, JOINTS, Motion, Program
+from srci_py_hmi.robot import (
     CORE_FUNCTIONS,
     MOTION_FUNCTIONS,
     Activity,
@@ -23,11 +23,11 @@ from srci_teach.robot import (
     Snapshot,
     Target,
 )
-from srci_teach.ui import coords
-from srci_teach.ui.step_editor import blend_label, edit_step, motion_label
-from srci_teach.ui.theme import COLORS, CSS, HOLD_JS
+from srci_py_hmi.ui import coords
+from srci_py_hmi.ui.step_editor import blend_label, edit_step, motion_label
+from srci_py_hmi.ui.theme import COLORS, CSS, HOLD_JS
 
-log = logging.getLogger("srci_teach.ui")
+log = logging.getLogger("srci_py_hmi.ui")
 
 # value range of the position bars (joints [deg], X/Y/Z [mm], Rx/Ry/Rz [deg])
 JOINT_RANGE = 360.0

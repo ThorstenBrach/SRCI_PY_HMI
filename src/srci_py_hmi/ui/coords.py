@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING, Any
 
 from nicegui import ui
 
-from srci_teach.model import CARTESIAN
-from srci_teach.robot import CoordData
+from srci_py_hmi.model import CARTESIAN
+from srci_py_hmi.robot import CoordData
 
 if TYPE_CHECKING:
-    from srci_teach.ui.pendant import Pendant
+    from srci_py_hmi.ui.pendant import Pendant
 
 TOOL, FRAME = "tool", "frame"
 

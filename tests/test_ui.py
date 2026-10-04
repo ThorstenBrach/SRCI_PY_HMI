@@ -23,9 +23,9 @@ except sdk.SdkNotAvailableError as exc:  # pragma: no cover - depends on the mac
 from nicegui import ui  # noqa: E402
 from nicegui.testing import User, user_simulation  # noqa: E402
 
-from srci_teach.model import Program  # noqa: E402
-from srci_teach.robot import Phase, RobotService, Target  # noqa: E402
-from srci_teach.ui.pendant import Pendant, Workspace  # noqa: E402
+from srci_py_hmi.model import Program  # noqa: E402
+from srci_py_hmi.robot import Phase, RobotService, Target  # noqa: E402
+from srci_py_hmi.ui.pendant import Pendant, Workspace  # noqa: E402
 
 
 async def wait_for(condition: Callable[[], bool], timeout: float = 10.0) -> None:

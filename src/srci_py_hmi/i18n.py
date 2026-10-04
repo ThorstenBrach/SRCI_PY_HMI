@@ -11,7 +11,7 @@ _language: ContextVar[str] = ContextVar("language", default=DEFAULT)
 
 TEXTS: dict[str, dict[str, str]] = {
     # app / navigation
-    "app.title": {"de": "SRCI Teach", "en": "SRCI Teach"},
+    "app.title": {"de": "SRCI PY HMI", "en": "SRCI PY HMI"},
     "nav.connection": {"de": "Verbindung", "en": "Connection"},
     "nav.jog": {"de": "Bewegen", "en": "Jog"},
     "nav.program": {"de": "Programm", "en": "Program"},

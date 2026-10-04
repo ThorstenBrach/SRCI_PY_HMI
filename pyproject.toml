@@ -3,7 +3,7 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "srci-teach"
+name = "srci-py-hmi"
 version = "0.1.0"
 description = "Teach pendant for SRCI robots (web UI with NiceGUI on top of the srci client)"
 readme = "README.md"
@@ -19,10 +19,10 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "playwright>=1.45"]
 
 [project.scripts]
-srci-teach = "srci_teach.app:main"
+srci-hmi = "srci_py_hmi.app:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/srci_teach"]
+packages = ["src/srci_py_hmi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -43,7 +43,7 @@ ignore = [
 max-line-length = 135  # nested NiceGUI layouts
 
 [tool.ruff.lint.per-file-ignores]
-"src/srci_teach/ui/theme.py" = ["E501"]  # CSS and JavaScript
+"src/srci_py_hmi/ui/theme.py" = ["E501"]  # CSS and JavaScript
 
 [tool.mypy]
 python_version = "3.12"
