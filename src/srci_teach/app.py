@@ -25,6 +25,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--robot", default="192.168.2.10", help="IP address of the PLC gateway")
     p.add_argument("--robot-port", type=int, default=5000, help="TCP port of the PLC gateway")
     p.add_argument("--length", type=int, default=256, help="telegram length per direction [bytes]")
+    p.add_argument("--lifesign", type=int, default=None,
+                   help="LifeSign timeout [ms] (default: the last value set in the UI, else 500)")  # fmt: skip
     p.add_argument("--simulator", action="store_true", help="preselect the SDK simulator")
     p.add_argument("--native", action="store_true", help="own window instead of the browser (pywebview)")
     p.add_argument("--log", type=Path, default=None, help="log file")
@@ -50,8 +52,20 @@ def main(argv: list[str] | None = None) -> None:
         robot=robot,
         programs_dir=args.programs.resolve(),
         program=Program(t("prog.default")),
-        target=Target(host=args.robot, port=args.robot_port, length=args.length, simulator=args.simulator),
+        target=Target(
+            host=args.robot,
+            port=args.robot_port,
+            length=args.length,
+            simulator=args.simulator,
+            lifesign_ms=args.lifesign or 500,
+        ),
     )
+
+    @app.on_startup
+    def restore_settings() -> None:
+        # the LifeSign timeout set in the UI is kept for the next start (unless --lifesign is given)
+        if args.lifesign is None:
+            ws.target.lifesign_ms = int(app.storage.general.get("lifesign_ms", ws.target.lifesign_ms))
 
     @ui.page("/")
     def index() -> None:

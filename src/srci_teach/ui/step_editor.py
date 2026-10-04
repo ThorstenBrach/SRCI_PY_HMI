@@ -36,6 +36,26 @@ def blend_label(p: Pendant, step: Step) -> str:
     return text
 
 
+def _mark(p: Pendant, result: bool | None) -> str:
+    """Suffix of a blending mode in the select: accepted / refused by the robot in this connection."""
+    if result is None:
+        return ""
+    return "  ✓" if result else "  – " + p.tr("blend.rejected")
+
+
+def default_blending(p: Pendant) -> str:
+    """Blending mode for a step that is switched to blended: the last one the robot accepted in this
+    connection, else one it did not refuse (JAKA MiniCobo: only MAX_CORNER_DEVIATION)."""
+    results = p.robot.blending_results
+    accepted = [m for m, ok in results.items() if ok]
+    if accepted:
+        return accepted[-1]
+    for mode in ("CORNER_DISTANCE", "MAX_CORNER_DEVIATION", *BLENDING_MODES[1:]):
+        if results.get(mode) is not False:
+            return mode
+    return "CORNER_DISTANCE"
+
+
 async def edit_step(p: Pendant, index: int) -> Step | None:
     """Opens the editor for step ``index``; returns the new step (not yet stored) or None."""
     step = p.ws.program.steps[index]
@@ -43,7 +63,7 @@ async def edit_step(p: Pendant, index: int) -> Step | None:
         "point": step.point,
         "motion": step.motion.value,
         "blended": step.blended,
-        "mode": step.blending_mode if step.blended else "CORNER_DISTANCE",
+        "mode": step.blending_mode if step.blended else default_blending(p),
         "p0": step.blending or 10.0,
         "p1": step.blending_post,
     }
@@ -78,8 +98,10 @@ async def edit_step(p: Pendant, index: int) -> Step | None:
             v, "blended"
         ).props("no-caps unelevated").classes("tp-seg self-start").mark("blend-toggle")
         with ui.column().classes("w-full gap-3").bind_visibility_from(v, "blended"):
+            results = p.robot.blending_results
             ui.select(
-                {m: p.tr(f"blend.{m}") for m in BLENDING_MODES if m != "EXACT_STOP"}, value=v["mode"],
+                {m: p.tr(f"blend.{m}") + _mark(p, results.get(m))
+                 for m in BLENDING_MODES if m != "EXACT_STOP"}, value=v["mode"],
                 label=p.tr("step.blend_mode"),
             ).bind_value(v, "mode").props("filled").classes("w-full")  # fmt: skip
             with ui.row().classes("w-full gap-3 no-wrap"):

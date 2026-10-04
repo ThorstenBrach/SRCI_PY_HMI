@@ -80,6 +80,8 @@ CORE_FUNCTIONS = (
 )  # fmt: skip
 MOTION_FUNCTIONS = {"joint": "MoveAxesAbsolute", "ptp": "MoveDirectAbsolute", "linear": "MoveLinearAbsolute"}
 
+BLENDING_NOT_SUPPORTED = 0x8E05  # error of the RC: BlendingMode not supported
+
 JOG_WATCHDOG = 0.5  # s without jog_alive() -> the jog stops
 JOG_AXES = ("X_J1", "Y_J2", "Z_J3", "Rx_J4", "Ry_J5", "Rz_J6")
 
@@ -115,7 +117,9 @@ class Target:
     port: int = 5000
     length: int = 256  # telegram length per direction = size of the PROFINET module
     simulator: bool = False  # SRCI SDK simulator behind a local gateway (needs SRCI_SDK_SIM_LIB)
-    lifesign_ms: int = 100
+    # LifeSign timeout [ms]: 50 is the spec default; the JAKA MiniCobo needs >= 300 (no LifeSign for
+    # ~200 ms while it switches the drives off after a rejected command)
+    lifesign_ms: int = 500
 
 
 @dataclass
@@ -197,6 +201,9 @@ class RobotService:
         self._watchdog: threading.Thread | None = None
         self._closing = threading.Event()
         self.override = 20.0
+        # blending modes the RC accepted (True) or refused with 16#8E05 (False) - per connection, the
+        # RC reports them nowhere else
+        self.blending_results: dict[str, bool] = {}
         self.tool = 0  # tool / frame of the displayed Cartesian position, of jogging and teaching
         self.frame = 0
         self.listeners: list[Callable[[], None]] = []  # called after a change of phase / activity
@@ -296,6 +303,7 @@ class RobotService:
         with self._busy:
             self.disconnect()
             self._target = target
+            self.blending_results = {}
             self._closing.clear()
             self._set(phase=Phase.CONNECTING, activity=Activity.IDLE, error="")
             try:
@@ -758,7 +766,15 @@ class RobotService:
             with contextlib.suppress(Exception):
                 client.wait_done(fb, timeout=5.0, check=False)
             raise SrciError("stopped")
-        client.wait_done(fb, timeout=5.0)
+        mode = BlendingMode(fb.ParCmd.BlendingMode).name
+        try:
+            client.wait_done(fb, timeout=5.0)
+        except CommandError as exc:
+            if exc.error_id == BLENDING_NOT_SUPPORTED:
+                self.blending_results[mode] = False
+            raise
+        if mode != "EXACT_STOP":
+            self.blending_results[mode] = True
 
 
 def _motion_block(step: Step, point: Point) -> Any:

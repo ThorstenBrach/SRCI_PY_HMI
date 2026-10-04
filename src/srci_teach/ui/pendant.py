@@ -105,6 +105,7 @@ class Pendant:
         self.jog_keys: list[ui.button] = []
         self._sent: dict[tuple[int, str], str] = {}
         self.seen_coords: tuple[object, ...] = ()
+        self.seen_blending: tuple[tuple[str, bool], ...] = ()
         self.coord_pages = {kind: coords.CoordPage(self, kind) for kind in (coords.TOOL, coords.FRAME)}
 
     def put(self, element: ui.element, kind: str, value: str) -> None:
@@ -367,9 +368,35 @@ class Pendant:
                     ui.label(self.tr("conn.sim_hint")).classes("tp-muted").bind_visibility_from(
                         target, "simulator"
                     )
-                    ui.number(self.tr("conn.lifesign"), min=20, max=2000, precision=0).bind_value(
-                        target, "lifesign_ms", forward=lambda v: int(v or 100)
-                    ).props("filled").classes("w-full mt-3")
+                    # LifeSign timeout: quick choice + free value, remembered for the next start
+                    ui.label(self.tr("conn.lifesign")).classes("tp-card-title mt-4")
+                    with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                        presets = ui.toggle({100: "100", 250: "250", 500: "500", 1000: "1000"}, value=None)
+                        presets.props("no-caps unelevated").classes("tp-seg").mark("lifesign-presets")
+                        lifesign = (
+                            ui.number(
+                                value=target.lifesign_ms, min=20, max=5000, step=50, precision=0, suffix="ms"
+                            )
+                            .props("filled dense")
+                            .classes("w-32 tp-mono-in")
+                            .mark("lifesign")
+                        )
+
+                        def set_lifesign(value: Any) -> None:
+                            ms = int(value or 0)
+                            if 20 <= ms <= 5000:
+                                target.lifesign_ms = ms
+                                app.storage.general["lifesign_ms"] = ms
+                                lifesign.set_value(ms)
+                                presets.set_value(ms if ms in (100, 250, 500, 1000) else None)
+
+                        presets.on_value_change(lambda e: set_lifesign(e.value) if e.value else None)
+                        lifesign.on("blur", lambda: set_lifesign(lifesign.value))
+                        lifesign.on("keydown.enter", lambda: set_lifesign(lifesign.value))
+                        presets.set_value(
+                            target.lifesign_ms if target.lifesign_ms in (100, 250, 500, 1000) else None
+                        )
+                    ui.label(self.tr("conn.lifesign_hint")).classes("tp-muted mt-1")
                     with ui.row().classes("w-full items-center mt-5 gap-3"):
                         self.connect_btn = (
                             ui.button(self.tr("conn.connect"), on_click=self.connect)
@@ -701,7 +728,12 @@ class Pendant:
                         chip.classes("unsupported").tooltip(
                             self.tr("caps.not_supported", f=MOTION_FUNCTIONS[step.motion.value])
                         )
-                    ui.label(blend_label(self, step)).classes("tp-chip" + (" blend" if step.blended else ""))
+                    refused = step.blended and self.robot.blending_results.get(step.blending_mode) is False
+                    blend = ui.label(blend_label(self, step)).classes(
+                        "tp-chip" + (" blend" if step.blended else "") + (" unsupported" if refused else "")
+                    )
+                    if refused:
+                        blend.tooltip(self.tr("blend.rejected"))
                     vel = self.tr("step.default") if step.velocity < 0 else f"{step.velocity:.0f} %"
                     ui.label(vel).classes("tp-mono tp-muted w-16 text-right")
                 with ui.button(icon="more_vert").props("flat round dense").classes("text-[var(--text-2)]"):
@@ -971,6 +1003,10 @@ class Pendant:
         elif (s.activity is Activity.RUNNING and s.program_step != old.program_step) or (
             old.activity is Activity.RUNNING and s.activity is not Activity.RUNNING
         ):
+            self.draw_steps.refresh()
+        results = tuple(sorted(self.robot.blending_results.items()))
+        if results != self.seen_blending:
+            self.seen_blending = results
             self.draw_steps.refresh()
         self.dirty_label.set_visibility(self.ws.dirty)
         busy = s.activity in (Activity.RUNNING, Activity.MOVING)

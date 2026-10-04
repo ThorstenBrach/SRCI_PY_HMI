@@ -216,6 +216,11 @@ TEXTS: dict[str, dict[str, str]] = {
     "step.up": {"de": "Nach oben", "en": "Move up"},
     "step.down": {"de": "Nach unten", "en": "Move down"},
     "step.edit_hint": {"de": "Schritt antippen zum Bearbeiten", "en": "Tap a step to edit it"},
+    "blend.rejected": {"de": "vom Roboter abgelehnt (16#8E05)", "en": "refused by the robot (16#8E05)"},
+    "conn.lifesign_hint": {
+        "de": "Wie lange ein ausbleibendes Lebenszeichen toleriert wird. JAKA: ≥ 300 ms.",
+        "en": "How long a missing LifeSign is tolerated. JAKA: ≥ 300 ms.",
+    },
     "blend.EXACT_STOP": {"de": "Genauhalt", "en": "Exact stop"},
     "blend.CORNER_DISTANCE": {"de": "Eckabstand", "en": "Corner distance"},
     "blend.CORNER_DISTANCE_1R": {"de": "Eckabstand, ein Radius", "en": "Corner distance, one radius"},

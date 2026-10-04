@@ -228,3 +228,23 @@ def test_enable_acknowledges_a_pending_error(robot: RobotService) -> None:
     robot.set_enabled(True)
     assert calls[0] == MC_GroupResetFB.__name__
     assert robot.snapshot().enabled
+
+
+def test_blending_modes_accepted_and_refused_are_remembered(robot: RobotService) -> None:
+    """The RC reports its blending modes nowhere: the service records 16#8E05 and accepted modes."""
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([0.0] * 6, [0.0] * 6, name="A")
+    p.add_point([10.0, 0, 0, 0, 0, 0], [10.0, 0, 0, 0, 0, 0], name="B")
+    p.add_step("B", Motion.LINEAR, 50.0, 5.0, blending_mode="MAX_CORNER_DEVIATION")
+    p.add_step("A", Motion.LINEAR)
+    robot.run_program(p, hold=False)
+    assert robot.blending_results == {"MAX_CORNER_DEVIATION": True}
+    q = Program()
+    q.points = p.points
+    q.add_step("B", Motion.JOINT, 50.0, 5.0, blending_mode="CORNER_DISTANCE_2R", blending_post=5.0)
+    q.add_step("A", Motion.JOINT)
+    with pytest.raises(Exception, match="8E05"):
+        robot.run_program(q, hold=False)
+    assert robot.blending_results["CORNER_DISTANCE_2R"] is False
+    assert Target().lifesign_ms == 500  # JAKA: no LifeSign for ~200 ms after a rejected command
