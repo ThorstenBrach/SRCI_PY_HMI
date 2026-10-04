@@ -52,6 +52,7 @@ class Workspace:
     coord_revision: int = 0  # changed tools / frames / active coordinate system
     labels: dict[str, dict[str, str]] = field(default_factory=dict)  # local names of tools / frames
     loading_coords: bool = False
+    coords_tried: bool = False  # tools / frames read after the current connection
 
     def __post_init__(self) -> None:
         self.labels = coords.load_labels(self.labels_path)
@@ -278,6 +279,7 @@ class Pendant:
                 self.build_messages()
         self.show(self.page)
         ui.timer(0.15, self.refresh)
+        ui.timer(0.5, self.auto_load_coords)
 
     def show(self, page: str) -> None:
         self.page = page
@@ -833,6 +835,21 @@ class Pendant:
         self.ws.revision += 1
         self.from_step = 0
 
+    def auto_load_coords(self) -> None:
+        """Read tools and frames once the RC has reported its functions (after connecting) - as a
+        background task, so the timer does not wait for it."""
+        s = self.snap
+        if s.phase is not Phase.READY:
+            self.ws.coords_tried = False  # next connection: read again
+        elif s.supported is not None and not self.ws.coords_tried:
+            self.ws.coords_tried = True  # once per connection, also if reading fails
+
+            async def load() -> None:
+                with self.panels:  # UI context of this tab for the notifications
+                    await self.load_coords()
+
+            background_tasks.create(load(), name="read tools and frames")
+
     async def load_coords(self) -> None:
         """Tools and frames of the RC after connecting (once for all tabs)."""
         if self.ws.loading_coords:
@@ -968,8 +985,6 @@ class Pendant:
                 page.draw.refresh()
             self.tool_select.set_options(coords.options(self, coords.TOOL), value=s.tool)
             self.frame_select.set_options(coords.options(self, coords.FRAME), value=s.frame)
-        if s.supported is not None and old.supported is None and not (self.ws.tools or self.ws.frames):
-            background_tasks.create(self.load_coords(), name="read tools and frames")
         for page in self.coord_pages.values():
             page.read_btn.set_enabled(ready and s.activity is Activity.IDLE and page.can_read)
         # messages

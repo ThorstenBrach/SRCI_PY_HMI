@@ -71,6 +71,7 @@ async def run_user(user: User, ws: Workspace) -> None:
     await user.should_see("LIN ⤳")
     # tool 1 on the robot
     user.find(kind=ui.button, content="Werkzeuge").click()
+    await wait_for(lambda: len(ws.tools) > 1, 20.0)  # read in the background after connecting
     await user.should_see(marker="edit-tool-1")
     user.find(marker="edit-tool-1").click()
     await user.should_see(marker="coord-write")

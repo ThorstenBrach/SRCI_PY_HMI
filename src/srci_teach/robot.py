@@ -454,6 +454,10 @@ class RobotService:
         with self._command("EnableRobot") as client:
             if on:
                 if self._enable is None:
+                    # a pending error of the RC (e.g. "sequence timeout" of the last connection)
+                    # refuses EnableRobot with 16#8C04 "robot disabled due to an error": acknowledge first
+                    if self.supported() is None or "GroupReset" in (self.supported() or ()):
+                        client.execute(MC_GroupResetFB(), timeout=10.0)
                     enable = MC_EnableRobotFB()
                     try:
                         client.enable(enable, timeout=15.0)

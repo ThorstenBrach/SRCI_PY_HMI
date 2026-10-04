@@ -211,3 +211,20 @@ def test_functions_the_rc_does_not_report_are_refused(robot: RobotService) -> No
     with pytest.raises(NotSupportedError, match="GroupJog"):
         robot.jog_press(JogMode.JOG_AXES, 0, 1, 10.0)
     assert robot.run_program(p, 0, single_step=True, hold=False) == 1
+
+
+def test_enable_acknowledges_a_pending_error(robot: RobotService) -> None:
+    """EnableRobot is refused while the RC has an error (16#8C04) - set_enabled resets first."""
+    from srci.fb import MC_GroupResetFB
+
+    calls: list[str] = []
+    original = robot.client.execute
+
+    def spy(block, *args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(type(block).__name__)
+        return original(block, *args, **kwargs)
+
+    robot.client.execute = spy  # type: ignore[method-assign]
+    robot.set_enabled(True)
+    assert calls[0] == MC_GroupResetFB.__name__
+    assert robot.snapshot().enabled
