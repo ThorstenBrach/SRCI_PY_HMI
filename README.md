@@ -4,6 +4,11 @@ Eine Weboberfläche im Stil eines Tablets (NiceGUI) auf Basis des Python-Clients
 [`srci`](https://github.com/ThorstenBrach/SRCI_CLIENT_PY) (SRCI_PY). Man verbindet sich damit über das SPS-Gateway mit dem Roboter, schaltet ihn ein,
 verfährt ihn per Tippbetrieb, teacht Punkte und fährt daraus Programme ab.
 
+<p>
+  <img src="docs/images/jog.png" alt="Bewegen" width="49%">
+  <img src="docs/images/step_editor.png" alt="Schritt bearbeiten" width="49%">
+</p>
+
 ```
 Browser / Tablet  --HTTP-->  srci-hmi (Python, NiceGUI)  --TCP-->  SPS-Gateway  --PROFINET-->  Roboter
                                      └─ oder: SRCI-SDK-Simulator (lokal, ohne Roboter)
