@@ -49,6 +49,7 @@ from srci.fb import (
     MC_WriteFrameDataFB,
     MC_WriteToolDataFB,
 )
+from srci.logging_bridge import PythonLogger
 from srci.transport import TcpTransport
 from srci.transport.base import Transport
 from srci.types import (
@@ -59,6 +60,7 @@ from srci.types import (
     JogMode,
     MessageLevel,
     RaSequenceState,
+    Severity,
     TurnMode,
 )
 
@@ -172,7 +174,8 @@ class CoordData:
 class RobotService:
     """The connection to one robot (thread safe)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, plc_log: bool = False) -> None:
+        self.plc_log = plc_log  # system log of the function blocks -> logger srci.plc (log file)
         self._client: SrciClient | None = None
         self._transport: Transport | None = None
         self._stack = contextlib.ExitStack()
@@ -328,6 +331,9 @@ class RobotService:
         cfg = client.program.config
         cfg.Com.LifeSignTimeOut = target.lifesign_ms
         cfg.Rob.Parameter.MessageLevel = MessageLevel.WARNING
+        if self.plc_log:
+            client.program.external_logger = PythonLogger()
+            client.program.log_level = Severity.DEBUG
         self._client = client
 
     def _start_position(self, client: SrciClient) -> None:
@@ -396,8 +402,16 @@ class RobotService:
                     self.stop()
             # ReadActualPosition runs on the RC in parallel to motions and jogging: the display
             # follows the robot also while a program runs
+            # (but not during other commands like EnableRobot: some RCs do not like parallel commands
+            # while they switch the drives on)
             if self._cyclic is None and time.monotonic() - last_poll > 0.25:
-                self._poll_position()
+                if self._activity in (Activity.MOVING, Activity.RUNNING, Activity.JOGGING):
+                    self._poll_position()
+                elif self._busy.acquire(blocking=False):
+                    try:
+                        self._poll_position()
+                    finally:
+                        self._busy.release()
                 last_poll = time.monotonic()
 
     # ------------------------------------------------------------------ commands

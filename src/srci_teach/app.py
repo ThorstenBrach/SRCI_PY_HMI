@@ -38,11 +38,14 @@ def main(argv: list[str] | None = None) -> None:
         format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
         filename=args.log,
     )
+    if args.log:
+        # system log of all function blocks (commands, responses, errors) and of the transport
+        logging.getLogger("srci").setLevel(logging.DEBUG)
     from nicegui import app, ui
 
     from srci_teach.ui.pendant import Pendant, Workspace
 
-    robot = RobotService()
+    robot = RobotService(plc_log=args.log is not None)
     ws = Workspace(
         robot=robot,
         programs_dir=args.programs.resolve(),

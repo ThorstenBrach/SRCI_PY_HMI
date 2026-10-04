@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,8 @@ from srci_teach.robot import (
 from srci_teach.ui import coords
 from srci_teach.ui.step_editor import blend_label, edit_step, motion_label
 from srci_teach.ui.theme import COLORS, CSS, HOLD_JS
+
+log = logging.getLogger("srci_teach.ui")
 
 # value range of the position bars (joints [deg], X/Y/Z [mm], Rx/Ry/Rz [deg])
 JOINT_RANGE = 360.0
@@ -129,6 +132,7 @@ class Pendant:
             result = await run.io_bound(fn, *args, **kwargs)
         except Exception as exc:
             text = str(exc) or type(exc).__name__
+            log.warning("%s: %s", getattr(fn, "__name__", fn), text)
             if quiet_stop and "stopped" in text:
                 ui.notify(text.capitalize(), type="warning", position="top", timeout=1500)
             else:
