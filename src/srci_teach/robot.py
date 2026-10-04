@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import logging
 import threading
 import time
@@ -57,6 +58,7 @@ from srci.types import (
     BlendingMode,
     JogMode,
     MessageLevel,
+    RaSequenceState,
     TurnMode,
 )
 
@@ -64,8 +66,28 @@ from srci_teach.model import CARTESIAN, JOINTS, Motion, Point, Program, Step
 
 log = logging.getLogger("srci_teach.robot")
 
+# functions of the profile "Core" (spec chapter 6) - shown on the connection page
+CORE_FUNCTIONS = (
+    "ReadRobotData", "EnableRobot", "GroupReset", "ReadActualPosition", "ReadActualPositionCyclic",
+    "ExchangeConfiguration", "SetSequence", "ChangeSpeedOverride", "ReadMessages",
+    "ReadRobotReferenceDynamics", "WriteFrameData", "WriteToolData", "WriteLoadData",
+    "WriteRobotReferenceDynamics", "WriteRobotDefaultDynamics", "ReadRobotDefaultDynamics",
+    "ReadFrameData", "ReadToolData", "ReadLoadData", "ReadRobotSWLimits", "GroupJog",
+    "MoveLinearAbsolute", "MoveDirectAbsolute", "MoveAxesAbsolute", "GroupStop", "GroupContinue",
+    "GroupInterrupt", "ReturnToPrimary",
+)  # fmt: skip
+MOTION_FUNCTIONS = {"joint": "MoveAxesAbsolute", "ptp": "MoveDirectAbsolute", "linear": "MoveLinearAbsolute"}
+
 JOG_WATCHDOG = 0.5  # s without jog_alive() -> the jog stops
 JOG_AXES = ("X_J1", "Y_J2", "Z_J3", "Rx_J4", "Ry_J5", "Rz_J6")
+
+
+class NotSupportedError(SrciError):
+    """The robot controller does not report the function in RCSupportedFunctions."""
+
+    def __init__(self, functions: str) -> None:
+        self.functions = functions
+        super().__init__(f"{functions}: not supported by the robot (RCSupportedFunctions)")
 
 
 class Phase(StrEnum):
@@ -128,6 +150,12 @@ class Snapshot:
     frame: int = 0  # ... and this frame
     highest_tool: int = 0  # highest tool / frame index of the RC (ExchangeConfiguration)
     highest_frame: int = 0
+    # functions the RC reports in RCSupportedFunctions (ReadRobotData); None = not known yet
+    supported: frozenset[str] | None = None
+
+    def can(self, function: str) -> bool:
+        """The RC supports ``function`` (True as long as it is not known)."""
+        return self.supported is None or function in self.supported
 
 
 @dataclass
@@ -225,9 +253,27 @@ class RobotService:
         joints, cartesian, valid = self._position()
         s.joints, s.cartesian, s.position_valid = joints, cartesian, valid
         s.highest_tool, s.highest_frame = _highest(client, "Tool"), _highest(client, "Frame")
+        s.supported = self.supported()
         s.messages = [Message(m.Severity.name, int(m.MessageCode), m.MessageText)
                       for m in program.message_log if m.MessageCode][:50]  # fmt: skip
         return s
+
+    def supported(self) -> frozenset[str] | None:
+        """Functions in RCSupportedFunctions (ReadRobotData of the RobotTask); None before the
+        RC has reported them."""
+        client = self._client
+        if client is None or not client.program.initialized:
+            return None
+        funcs = client.program.axes_group.State.RobotData.RCSupportedFunctions
+        names = frozenset(f.name for f in dataclasses.fields(funcs) if getattr(funcs, f.name) is True)
+        return names or None
+
+    def require(self, *functions: str) -> None:
+        """Raises :class:`NotSupportedError` if the RC does not report one of ``functions``."""
+        known = self.supported()
+        missing = [f for f in functions if known is not None and f not in known]
+        if missing:
+            raise NotSupportedError(", ".join(missing))
 
     def _position(self) -> tuple[list[float], list[float], bool]:
         cyc = self._cyclic
@@ -383,12 +429,14 @@ class RobotService:
 
     def reset(self) -> None:
         """GroupReset: acknowledge errors of the robot."""
+        self.require("GroupReset")
         with self._command("GroupReset") as client:
             client.execute(MC_GroupResetFB(), timeout=10.0)
             self._set(error="")
 
     def set_enabled(self, on: bool) -> None:
         """Switch the robot on (EnableRobot) or off."""
+        self.require("EnableRobot")
         with self._command("EnableRobot") as client:
             if on:
                 if self._enable is None:
@@ -411,6 +459,7 @@ class RobotService:
             raise ValueError(f"override {percent} outside 0 < x <= 100")
         self.override = float(percent)
         if self.connected:
+            self.require("ChangeSpeedOverride")
             with self._command("ChangeSpeedOverride") as client:
                 self._apply_override(client)
 
@@ -452,6 +501,7 @@ class RobotService:
     def read_position(self, tool: int, frame: int) -> list[float]:
         """Cartesian position of ``tool`` in ``frame`` (ReadActualPosition), e.g. to take the TCP
         as the origin of a new frame."""
+        self.require("ReadActualPosition")
         with self._command("ReadActualPosition") as client:
             fb = MC_ReadActualPositionFB()
             fb.ParCmd.ToolNo, fb.ParCmd.FrameNo = tool, frame
@@ -460,6 +510,7 @@ class RobotService:
 
     def read_tools(self) -> list[CoordData]:
         """All tools of the RC (index 0 .. HighestToolIndex, ReadToolData)."""
+        self.require("ReadToolData")
         with self._command("ReadToolData") as client:
             highest = _highest(client, "Tool")
             tools = []
@@ -476,6 +527,7 @@ class RobotService:
         """Write a tool to the RC (WriteToolData; tool 0 is the flange and cannot be changed)."""
         if tool.no < 1:
             raise ValueError("tool 0 is the flange of the robot")
+        self.require("WriteToolData")
         with self._command("WriteToolData") as client:
             fb = MC_WriteToolDataFB()
             fb.ParCmd.ToolNo = tool.no
@@ -487,6 +539,7 @@ class RobotService:
 
     def read_frames(self) -> list[CoordData]:
         """All frames of the RC (index 0 .. HighestFrameIndex, ReadFrameData)."""
+        self.require("ReadFrameData")
         with self._command("ReadFrameData") as client:
             highest = _highest(client, "Frame")
             frames = []
@@ -505,6 +558,7 @@ class RobotService:
             raise ValueError("frame 0 is the base frame of the robot")
         if frame.reference == frame.no:
             raise ValueError("a frame cannot refer to itself")
+        self.require("WriteFrameData")
         with self._command("WriteFrameData") as client:
             fb = MC_WriteFrameDataFB()
             fb.ParCmd.FrameNo = frame.no
@@ -527,11 +581,21 @@ class RobotService:
         frame = self.frame if frame is None else frame
         if axis not in range(6) or direction not in (1, -1):
             raise ValueError("axis 0..5, direction +1/-1")
+        self.require("GroupJog")
         self._jog_alive = time.monotonic()
         with self._command("GroupJog", wait=0.5) as client:
             if self._enable is None:
                 raise SrciError("GroupJog: switch the robot on first")
             self._jog_off()
+            # GroupJog needs the RA sequence IDLE or INTERRUPTED (16#8F13): after the previous jog the
+            # RC ends the jog sequence for a few cycles
+            status = client.program.axes_group.State.StatusRobotArm
+            with contextlib.suppress(WaitTimeoutError):
+                client.run_until(
+                    lambda: status.RaSequenceState in (RaSequenceState.IDLE, RaSequenceState.INTERRUPTED),
+                    1.0,
+                    "RA sequence idle",
+                )
             jog = MC_GroupJogFB()
             par = jog.ParCmd
             par.Mode, par.Override, par.ToolNo, par.FrameNo = (
@@ -604,6 +668,7 @@ class RobotService:
                 *, hold: bool = True) -> None:  # fmt: skip
         """Move to a taught point (exact stop) and wait until it is reached. ``hold``: the
         motion continues only while :meth:`alive` is called (hold-to-run)."""
+        self.require(MOTION_FUNCTIONS[Motion(motion).value])
         self._stop_event.clear()
         with self._command(f"Move to {point.name}", Activity.MOVING) as client:
             self._require_enabled()
@@ -623,8 +688,10 @@ class RobotService:
         steps = program.steps
         if not 0 <= start < len(steps):
             raise ValueError(f"step {start} does not exist")
-        self._stop_event.clear()
         end = start + 1 if single_step else len(steps)
+        # all motion types of the steps to run - before the first motion starts
+        self.require(*sorted({MOTION_FUNCTIONS[s.motion.value] for s in steps[start:end]}))
+        self._stop_event.clear()
         with self._command(f"Program {program.name}", Activity.RUNNING) as client:
             self._require_enabled()
             pending: list[tuple[int, Any]] = []

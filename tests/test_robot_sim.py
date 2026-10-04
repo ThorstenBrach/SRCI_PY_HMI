@@ -189,3 +189,25 @@ def test_all_motion_types_with_dynamics(robot: RobotService) -> None:
         p.add_step("B", motion, -1.0)
     assert robot.run_program(p, hold=False) == 9
     assert joints(robot)[0] == 20.0
+
+
+def test_functions_the_rc_does_not_report_are_refused(robot: RobotService) -> None:
+    """RCSupportedFunctions: a motion type / jog the RC does not report is not sent at all."""
+    from srci_teach.robot import NotSupportedError
+
+    s = robot.snapshot()
+    assert s.supported is not None and s.can("MoveDirectAbsolute")
+    robot.set_enabled(True)
+    reported = s.supported - {"MoveDirectAbsolute", "GroupJog"}
+    robot.supported = lambda: reported  # type: ignore[method-assign]  # an RC without them
+    assert not robot.snapshot().can("MoveDirectAbsolute")
+    p = Program()
+    p.add_point([10.0, 0, 0, 0, 0, 0], [10.0, 0, 0, 0, 0, 0])
+    p.add_step("P1", Motion.JOINT)
+    p.add_step("P1", Motion.PTP)
+    with pytest.raises(NotSupportedError, match="MoveDirectAbsolute"):
+        robot.run_program(p, hold=False)
+    assert joints(robot)[0] == 0.0  # not even the first (supported) step was started
+    with pytest.raises(NotSupportedError, match="GroupJog"):
+        robot.jog_press(JogMode.JOG_AXES, 0, 1, 10.0)
+    assert robot.run_program(p, 0, single_step=True, hold=False) == 1

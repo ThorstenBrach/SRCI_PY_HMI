@@ -51,6 +51,18 @@ class CoordPage:
         self.kind = kind
 
     @property
+    def function(self) -> str:
+        return "ToolData" if self.kind == TOOL else "FrameData"
+
+    @property
+    def can_read(self) -> bool:
+        return self.p.snap.can(f"Read{self.function}")
+
+    @property
+    def can_write(self) -> bool:
+        return self.p.snap.can(f"Write{self.function}")
+
+    @property
     def table(self) -> list[CoordData]:
         return self.p.ws.tools if self.kind == TOOL else self.p.ws.frames
 
@@ -81,6 +93,13 @@ class CoordPage:
     @ui.refreshable_method
     def draw(self) -> None:
         p = self.p
+        missing = [
+            f"{rw}{self.function}"
+            for rw, ok in (("Read", self.can_read), ("Write", self.can_write))
+            if not ok
+        ]
+        if missing:
+            ui.label(p.tr("caps.not_supported", f=", ".join(missing))).classes("tp-banner w-full mb-2")
         if not self.table:
             ui.label(p.tr("coord.none")).classes("tp-empty w-full")
             return
@@ -105,7 +124,7 @@ class CoordPage:
                     ui.button(p.tr("coord.use"), on_click=lambda n=data.no: self.use(n)).props(
                         "flat no-caps dense"
                     ).classes("tp-btn-soft px-3")
-                if data.no == 0:
+                if data.no == 0 or not self.can_write:
                     ui.icon("lock").classes("text-[var(--text-3)]").tooltip(p.tr("coord.fixed"))
                 else:
                     ui.button(icon="edit", on_click=lambda d=data: self.edit(d)).props(

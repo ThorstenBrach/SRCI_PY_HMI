@@ -142,6 +142,12 @@ body.body--dark .tp-seg .q-btn.bg-primary { background: #636366 !important; }
 .tp-chip.ptp { color: var(--blue); }
 .tp-chip.joint { color: var(--green); }
 .tp-chip.blend { color: var(--orange); }
+.tp-chip.unsupported { color: var(--red) !important; text-decoration: line-through; }
+.tp-cap { display: inline-flex; align-items: center; gap: 4px; border-radius: 8px; padding: 3px 8px;
+          font-size: 12px; font-weight: 500; background: rgba(52,199,89,.12); color: var(--text); }
+.tp-cap .q-icon { color: var(--green); }
+.tp-cap.missing { background: var(--card-2); color: var(--text-3); text-decoration: line-through; }
+.tp-cap.missing .q-icon { color: var(--text-3); }
 
 .tp-empty { color: var(--text-2); text-align: center; padding: 28px 12px; }
 .tp-banner { border-radius: 14px; padding: 12px 16px; background: rgba(255,149,0,.12); color: var(--text); }

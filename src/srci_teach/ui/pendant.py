@@ -12,7 +12,16 @@ from srci.types import JogMode
 
 from srci_teach.i18n import LANGUAGES, t
 from srci_teach.model import CARTESIAN, JOINTS, Motion, Program
-from srci_teach.robot import Activity, CoordData, Phase, RobotService, Snapshot, Target
+from srci_teach.robot import (
+    CORE_FUNCTIONS,
+    MOTION_FUNCTIONS,
+    Activity,
+    CoordData,
+    Phase,
+    RobotService,
+    Snapshot,
+    Target,
+)
 from srci_teach.ui import coords
 from srci_teach.ui.step_editor import blend_label, edit_step, motion_label
 from srci_teach.ui.theme import COLORS, CSS, HOLD_JS
@@ -91,7 +100,7 @@ class Pendant:
         self.axis_names: list[ui.label] = []
         self.jog_keys: list[ui.button] = []
         self._sent: dict[tuple[int, str], str] = {}
-        self.seen_coords = (-1, -1, -1, -1, -1)
+        self.seen_coords: tuple[object, ...] = ()
         self.coord_pages = {kind: coords.CoordPage(self, kind) for kind in (coords.TOOL, coords.FRAME)}
 
     def put(self, element: ui.element, kind: str, value: str) -> None:
@@ -395,9 +404,32 @@ class Pendant:
                             ).props("flat no-caps").classes("tp-btn-soft").tooltip(
                                 self.tr("power.reset_hint")
                             )
+                    with self.card(self.tr("caps.title")):
+                        self.draw_caps()
                     with self.card(self.tr("robot.title")):
                         self.info = {k: self.info_row(self.tr(f"robot.{k}"))
                                      for k in ("manufacturer", "model", "firmware", "srci", "mode")}  # fmt: skip
+
+    @ui.refreshable_method
+    def draw_caps(self) -> None:
+        supported = self.snap.supported
+        if supported is None:
+            ui.label(self.tr("caps.unknown")).classes("tp-muted")
+            return
+        core = [f for f in CORE_FUNCTIONS if f in supported]
+        ui.label(self.tr("caps.summary", n=len(core), total=len(CORE_FUNCTIONS))).classes("font-medium mb-2")
+        with ui.element("div").classes("flex flex-wrap gap-1"):
+            for f in CORE_FUNCTIONS:
+                ok = f in supported
+                with ui.element("div").classes("tp-cap" + ("" if ok else " missing")):
+                    ui.icon("check" if ok else "close").classes("text-[14px]")
+                    ui.label(f)
+        extra = sorted(supported - set(CORE_FUNCTIONS))
+        if not extra:
+            ui.label(self.tr("caps.none_more")).classes("tp-muted mt-3")
+            return
+        with ui.expansion(self.tr("caps.more", n=len(extra))).classes("w-full mt-2 tp-muted").props("dense"):
+            ui.label(", ".join(extra)).classes("tp-muted text-[13px]")
 
     # ------------------------------------------------------------------ jog
 
@@ -413,10 +445,12 @@ class Pendant:
                 mode.props("no-caps unelevated").classes("tp-seg")
             self.jog_banner = ui.row().classes("tp-banner w-full items-center justify-between")
             with self.jog_banner:
-                ui.label(self.tr("jog.need_enable"))
-                ui.button(self.tr("power.enable"), on_click=lambda: self.set_power(True)).props(
-                    "unelevated no-caps color=primary dense"
-                ).classes("px-4")
+                self.jog_banner_text = ui.label(self.tr("jog.need_enable"))
+                self.jog_banner_btn = (
+                    ui.button(self.tr("power.enable"), on_click=lambda: self.set_power(True))
+                    .props("unelevated no-caps color=primary dense")
+                    .classes("px-4")
+                )
             with ui.element("div").classes("grid w-full gap-5 items-start lg:grid-cols-[1.5fr_1fr]"):
                 with self.card():
                     for i in range(6):
@@ -656,7 +690,11 @@ class Pendant:
                     ui.label(step.point).classes("font-semibold min-w-0 truncate")
                     ui.space()
                     kind = {Motion.LINEAR: "lin", Motion.PTP: "ptp", Motion.JOINT: "joint"}[step.motion]
-                    ui.label(motion_label(self, step)).classes(f"tp-chip {kind}")
+                    chip = ui.label(motion_label(self, step)).classes(f"tp-chip {kind}")
+                    if not self.snap.can(MOTION_FUNCTIONS[step.motion.value]):
+                        chip.classes("unsupported").tooltip(
+                            self.tr("caps.not_supported", f=MOTION_FUNCTIONS[step.motion.value])
+                        )
                     ui.label(blend_label(self, step)).classes("tp-chip" + (" blend" if step.blended else ""))
                     vel = self.tr("step.default") if step.velocity < 0 else f"{step.velocity:.0f} %"
                     ui.label(vel).classes("tp-mono tp-muted w-16 text-right")
@@ -798,7 +836,8 @@ class Pendant:
         self.ws.loading_coords = True
         try:
             for page in self.coord_pages.values():
-                await page.read()
+                if page.can_read:
+                    await page.read()
         finally:
             self.ws.loading_coords = False
 
@@ -869,16 +908,21 @@ class Pendant:
         self.connect_spinner.set_visibility(s.phase is Phase.CONNECTING)
         self.conn_error.set_text(s.error)
         self.conn_error.set_visibility(bool(s.error) and s.phase in (Phase.FAILED, Phase.LOST))
-        self.power.set_enabled(ready)
+        self.power.set_enabled(ready and s.can("EnableRobot"))
+        if s.supported != old.supported:
+            self.draw_caps.refresh()
         if self.power.value != s.enabled:
             self.power.set_value(s.enabled)  # set_power() ignores it (no change)
-        self.override.set_enabled(ready)
+        self.override.set_enabled(ready and s.can("ChangeSpeedOverride"))
         for key, value in (("manufacturer", s.manufacturer), ("model", s.robot), ("firmware", s.firmware),
                            ("srci", s.srci_version), ("mode", s.operation_mode if ready else "")):  # fmt: skip
             self.info[key].set_text(value or "–")
         # jog page
-        self.jog_banner.set_visibility(ready and not s.enabled)
-        can_jog = ready and s.enabled and s.activity in (Activity.IDLE, Activity.JOGGING)
+        jog_supported = s.can("GroupJog")
+        self.jog_banner.set_visibility(ready and (not s.enabled or not jog_supported))
+        self.jog_banner_text.set_text(self.tr("jog.need_enable" if jog_supported else "jog.unsupported"))
+        self.jog_banner_btn.set_visibility(jog_supported)
+        can_jog = ready and s.enabled and jog_supported and s.activity in (Activity.IDLE, Activity.JOGGING)
         for jog_key in self.jog_keys:
             self.put(jog_key, "classes", "tp-key-btn" if can_jog else "tp-key-btn disabled")
         axes = self.jog_mode == "axes"
@@ -913,17 +957,17 @@ class Pendant:
             # stays enabled while it is held: disabling it would end the pointer capture -> release
             btn.set_enabled(ready and s.enabled and bool(self.ws.program.steps) and (not busy or self.held))
         # tools and frames
-        coord_key = (self.ws.coord_revision, s.tool, s.frame, s.highest_tool, s.highest_frame)
+        coord_key = (self.ws.coord_revision, s.tool, s.frame, s.highest_tool, s.highest_frame, s.supported)
         if coord_key != self.seen_coords:
             self.seen_coords = coord_key
             for page in self.coord_pages.values():
                 page.draw.refresh()
             self.tool_select.set_options(coords.options(self, coords.TOOL), value=s.tool)
             self.frame_select.set_options(coords.options(self, coords.FRAME), value=s.frame)
-        if ready and old.phase is not Phase.READY and not (self.ws.tools or self.ws.frames):
+        if s.supported is not None and old.supported is None and not (self.ws.tools or self.ws.frames):
             background_tasks.create(self.load_coords(), name="read tools and frames")
         for page in self.coord_pages.values():
-            page.read_btn.set_enabled(ready and s.activity is Activity.IDLE)
+            page.read_btn.set_enabled(ready and s.activity is Activity.IDLE and page.can_read)
         # messages
         if [m.code for m in s.messages] != [m.code for m in old.messages] or len(s.messages) != len(
             old.messages

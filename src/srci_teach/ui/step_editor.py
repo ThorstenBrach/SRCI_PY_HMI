@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from nicegui import ui
 
 from srci_teach.model import BLENDING_MODES, BLENDING_UNITS, DEFAULT, Motion, Step
+from srci_teach.robot import MOTION_FUNCTIONS
 
 if TYPE_CHECKING:
     from srci_teach.ui.pendant import Pendant
@@ -63,6 +64,13 @@ async def edit_step(p: Pendant, index: int) -> Step | None:
             "motion-toggle"
         )
         ui.label().bind_text_from(v, "motion", lambda m: p.tr(f"step.{m}_long")).classes("tp-muted -mt-2")
+        ui.label().bind_text_from(
+            v,
+            "motion",
+            lambda m: (
+                "" if p.snap.can(MOTION_FUNCTIONS[m]) else p.tr("caps.not_supported", f=MOTION_FUNCTIONS[m])
+            ),
+        ).classes("text-[var(--red)] font-medium -mt-2")
 
         # blending
         ui.label(p.tr("step.blend")).classes("tp-card-title")

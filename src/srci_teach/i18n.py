@@ -226,6 +226,30 @@ TEXTS: dict[str, dict[str, str]] = {
     "blend.MAX_CORNER_DEVIATION": {"de": "Max. Eckabweichung", "en": "Max. corner deviation"},
     "blend.DEFINED_VELOCITY": {"de": "Geschwindigkeit an der Ecke", "en": "Velocity at the corner"},
     "blend.RAMP_OVERLAP": {"de": "Rampenüberlappung", "en": "Ramp overlap"},
+    # capabilities (RCSupportedFunctions)
+    "caps.title": {"de": "Fähigkeiten des Roboters", "en": "Robot capabilities"},
+    "caps.lead": {
+        "de": "Core-Funktionen laut RCSupportedFunctions (ReadRobotData)",
+        "en": "Core functions according to RCSupportedFunctions (ReadRobotData)",
+    },
+    "caps.unknown": {
+        "de": "Wird beim Verbinden von der Robotersteuerung gelesen.",
+        "en": "Read from the robot controller when connecting.",
+    },
+    "caps.summary": {"de": "{n} von {total} Core-Funktionen", "en": "{n} of {total} core functions"},
+    "caps.more": {
+        "de": "{n} weitere Funktionen außerhalb von Core",
+        "en": "{n} further functions beyond Core",
+    },
+    "caps.none_more": {"de": "Keine Funktionen außerhalb von Core", "en": "No functions beyond Core"},
+    "caps.not_supported": {
+        "de": "Vom Roboter nicht unterstützt: {f}",
+        "en": "Not supported by the robot: {f}",
+    },
+    "jog.unsupported": {
+        "de": "Der Roboter unterstützt kein Tippen (GroupJog).",
+        "en": "The robot does not support jogging (GroupJog).",
+    },
     # messages page
     "msg.title": {"de": "Meldungen", "en": "Messages"},
     "msg.none": {"de": "Keine Meldungen der Robotersteuerung.", "en": "No messages of the robot controller."},
