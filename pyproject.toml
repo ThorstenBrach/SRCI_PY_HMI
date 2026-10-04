@@ -11,7 +11,7 @@ license = "MIT"
 authors = [{ name = "Thorsten Brach" }]
 requires-python = ">=3.12"
 dependencies = [
-    "srci",  # SRCI_CLIENT_PY - install it first: pip install -e ..\SRCI_PY
+    "srci-client",  # SRCI_CLIENT_PY (package srci) - install it first: pip install -e ..\SRCI_PY
     "nicegui>=3.0,<4",
 ]
 
