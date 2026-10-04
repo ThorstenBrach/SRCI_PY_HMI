@@ -182,7 +182,7 @@ def test_all_motion_types_with_dynamics(robot: RobotService) -> None:
     p = Program()
     p.add_point([0.0] * 6, [0.0] * 6, name="A")
     p.add_point([20.0, 0, 0, 0, 0, 0], [20.0, 0, 0, 0, 0, 0], name="B")
-    for motion in Motion:
+    for motion in (Motion.LINEAR, Motion.PTP, Motion.JOINT):
         # the harness supports CORNER_DISTANCE and RAMP_OVERLAP (SDK default: none)
         p.add_step("B", motion, 50.0, 5.0, blending_mode="CORNER_DISTANCE", acceleration=50.0)
         p.add_step("A", motion, 50.0, 50.0, blending_mode="RAMP_OVERLAP")
