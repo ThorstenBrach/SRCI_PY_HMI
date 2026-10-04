@@ -7,12 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nicegui import app, run, ui
+from nicegui import app, background_tasks, run, ui
 from srci.types import JogMode
 
 from srci_teach.i18n import LANGUAGES, t
 from srci_teach.model import CARTESIAN, JOINTS, Motion, Program
-from srci_teach.robot import Activity, Phase, RobotService, Snapshot, Target
+from srci_teach.robot import Activity, CoordData, Phase, RobotService, Snapshot, Target
+from srci_teach.ui import coords
+from srci_teach.ui.step_editor import blend_label, edit_step, motion_label
 from srci_teach.ui.theme import COLORS, CSS, HOLD_JS
 
 # value range of the position bars (joints [deg], X/Y/Z [mm], Rx/Ry/Rz [deg])
@@ -33,6 +35,24 @@ class Workspace:
     path: Path | None = None
     dirty: bool = False
     revision: int = 0  # changed program -> every tab redraws its lists
+    tools: list[CoordData] = field(default_factory=list)  # last read tables of the RC
+    frames: list[CoordData] = field(default_factory=list)
+    coord_revision: int = 0  # changed tools / frames / active coordinate system
+    labels: dict[str, dict[str, str]] = field(default_factory=dict)  # local names of tools / frames
+    loading_coords: bool = False
+
+    def __post_init__(self) -> None:
+        self.labels = coords.load_labels(self.labels_path)
+
+    @property
+    def labels_path(self) -> Path:
+        return self.programs_dir / "labels.json"
+
+    def save_labels(self) -> None:
+        import json
+
+        self.programs_dir.mkdir(parents=True, exist_ok=True)
+        self.labels_path.write_text(json.dumps(self.labels, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def changed(self) -> None:
         self.dirty = True
@@ -71,6 +91,8 @@ class Pendant:
         self.axis_names: list[ui.label] = []
         self.jog_keys: list[ui.button] = []
         self._sent: dict[tuple[int, str], str] = {}
+        self.seen_coords = (-1, -1, -1, -1, -1)
+        self.coord_pages = {kind: coords.CoordPage(self, kind) for kind in (coords.TOOL, coords.FRAME)}
 
     def put(self, element: ui.element, kind: str, value: str) -> None:
         """Set classes / style / props only if they changed (the timer runs every 150 ms and
@@ -127,8 +149,14 @@ class Pendant:
             ui.notify(self.tr("jog.need_enable"), type="warning", position="top")
             return
         self.held = True
-        await self.act(self.robot.jog_press, JOG_MODES[self.jog_mode], axis, direction,
-                       self.jog_speed, INCREMENTS[self.increment])  # fmt: skip
+        await self.act(
+            self.robot.jog_press,
+            JOG_MODES[self.jog_mode],
+            axis,
+            direction,
+            self.jog_speed,
+            INCREMENTS[self.increment],
+        )
         if not self.held:  # released while the jog was being started
             await run.io_bound(self.robot.release)
 
@@ -153,8 +181,15 @@ class Pendant:
         def on_step(i: int) -> None:
             self.from_step = i
 
-        nxt = await self.act(self.robot.run_program, self.ws.program, start, single_step=single_step,
-                             hold=not self.auto_run, on_step=on_step, quiet_stop=True)  # fmt: skip
+        nxt = await self.act(
+            self.robot.run_program,
+            self.ws.program,
+            start,
+            single_step=single_step,
+            hold=not self.auto_run,
+            on_step=on_step,
+            quiet_stop=True,
+        )
         self.held = False
         if nxt is not None:
             if nxt >= len(steps):
@@ -170,7 +205,7 @@ class Pendant:
         if position is None:
             return
         joints, cartesian = position
-        point = self.ws.program.add_point(joints, cartesian)
+        point = self.ws.program.add_point(joints, cartesian, tool=self.robot.tool, frame=self.robot.frame)
         self.ws.changed()
         ui.notify(self.tr("teach.done", name=point.name), type="positive", position="top", timeout=1500)
 
@@ -178,7 +213,7 @@ class Pendant:
         position = await self.act(self.robot.current_position)
         if position is None:
             return
-        self.ws.program.update_point(name, *position)
+        self.ws.program.update_point(name, *position, tool=self.robot.tool, frame=self.robot.frame)
         self.ws.changed()
         ui.notify(self.tr("teach.again_done", name=name), type="positive", position="top")
 
@@ -208,7 +243,8 @@ class Pendant:
             self.drawer = drawer
             with ui.column().classes("w-full gap-1 p-3"):
                 for key, icon in (("connection", "link"), ("jog", "open_with"),
-                                  ("program", "format_list_numbered"), ("messages", "notifications_none")):  # fmt: skip
+                                  ("program", "format_list_numbered"), ("tools", "construction"),
+                                  ("frames", "grid_4x4"), ("messages", "notifications_none")):  # fmt: skip
                     btn = ui.button(self.tr(f"nav.{key}"), icon=icon, on_click=lambda k=key: self.show(k))
                     btn.props("flat no-caps align=left").classes("tp-nav w-full")
                     self.nav_buttons[key] = btn
@@ -221,6 +257,10 @@ class Pendant:
                 self.build_jog()
             with ui.tab_panel("program").classes("p-0"):
                 self.build_program()
+            with ui.tab_panel("tools").classes("p-0"):
+                self.coord_pages[coords.TOOL].build()
+            with ui.tab_panel("frames").classes("p-0"):
+                self.coord_pages[coords.FRAME].build()
             with ui.tab_panel("messages").classes("p-0"):
                 self.build_messages()
         self.show(self.page)
@@ -288,9 +328,12 @@ class Pendant:
             self.page_title(self.tr("conn.title"), self.tr("conn.subtitle"))
             with ui.element("div").classes("grid w-full gap-5 md:grid-cols-2"):
                 with self.card():
-                    ui.toggle({False: self.tr("conn.robot"), True: self.tr("conn.simulator")},
-                              value=target.simulator).bind_value(target, "simulator").props(
-                        "no-caps unelevated").classes("tp-seg self-start mb-4")  # fmt: skip
+                    ui.toggle(
+                        {False: self.tr("conn.robot"), True: self.tr("conn.simulator")},
+                        value=target.simulator,
+                    ).bind_value(target, "simulator").props("no-caps unelevated").classes(
+                        "tp-seg self-start mb-4"
+                    )
                     with (
                         ui.column()
                         .classes("w-full gap-3")
@@ -345,9 +388,13 @@ class Pendant:
                             lambda e: self.override_label.set_text(f"{e.value:.0f} %")
                         )
                         with ui.row().classes("w-full mt-3"):
-                            ui.button(self.tr("power.reset"), icon="restart_alt",
-                                      on_click=lambda: self.act(self.robot.reset)).props(
-                                "flat no-caps").classes("tp-btn-soft").tooltip(self.tr("power.reset_hint"))  # fmt: skip
+                            ui.button(
+                                self.tr("power.reset"),
+                                icon="restart_alt",
+                                on_click=lambda: self.act(self.robot.reset),
+                            ).props("flat no-caps").classes("tp-btn-soft").tooltip(
+                                self.tr("power.reset_hint")
+                            )
                     with self.card(self.tr("robot.title")):
                         self.info = {k: self.info_row(self.tr(f"robot.{k}"))
                                      for k in ("manufacturer", "model", "firmware", "srci", "mode")}  # fmt: skip
@@ -358,9 +405,11 @@ class Pendant:
         with ui.column().classes("tp-page"):
             with ui.row().classes("w-full items-end justify-between"):
                 self.page_title(self.tr("jog.title"), self.tr("jog.hold"))
-                mode = ui.toggle({"axes": self.tr("jog.axes"), "base": self.tr("jog.base"),
-                                  "tool": self.tr("jog.tool")}, value=self.jog_mode,
-                                 on_change=lambda e: self.set_jog_mode(e.value))  # fmt: skip
+                mode = ui.toggle(
+                    {"axes": self.tr("jog.axes"), "base": self.tr("jog.base"), "tool": self.tr("jog.tool")},
+                    value=self.jog_mode,
+                    on_change=lambda e: self.set_jog_mode(e.value),
+                )
                 mode.props("no-caps unelevated").classes("tp-seg")
             self.jog_banner = ui.row().classes("tp-banner w-full items-center justify-between")
             with self.jog_banner:
@@ -387,16 +436,47 @@ class Pendant:
                 with ui.column().classes("gap-5 w-full"):
                     with self.card(self.tr("jog.speed")):
                         with ui.row().classes("w-full items-center no-wrap gap-4"):
-                            ui.slider(min=1, max=100, step=1, value=self.jog_speed,
-                                      on_change=lambda e: self.set_jog_speed(e.value)).classes("flex-1")  # fmt: skip
+                            ui.slider(
+                                min=1,
+                                max=100,
+                                step=1,
+                                value=self.jog_speed,
+                                on_change=lambda e: self.set_jog_speed(e.value),
+                            ).classes("flex-1")
                             self.jog_speed_label = ui.label(f"{self.jog_speed:.0f} %").classes(
                                 "tp-val tp-mono w-14"
                             )
                         ui.label(self.tr("jog.step")).classes("tp-card-title mt-4")
-                        inc = ui.toggle({"0": self.tr("jog.continuous"), "0.1": "0.1", "1": "1", "10": "10"},
-                                        value=self.increment, on_change=lambda e: self.set_increment(e.value))  # fmt: skip
+                        inc = ui.toggle(
+                            {"0": self.tr("jog.continuous"), "0.1": "0.1", "1": "1", "10": "10"},
+                            value=self.increment,
+                            on_change=lambda e: self.set_increment(e.value),
+                        )
                         inc.props("no-caps unelevated").classes("tp-seg")
                         self.increment_unit = ui.label("").classes("tp-muted mt-1")
+                    with self.card(self.tr("coord.system")):
+                        with ui.row().classes("w-full gap-3 no-wrap"):
+                            self.tool_select = (
+                                ui.select(
+                                    {0: "T0"},
+                                    value=self.robot.tool,
+                                    label=self.tr("coord.tool"),
+                                    on_change=lambda e: self.select_coords(tool=e.value),
+                                )
+                                .props("filled dense options-dense")
+                                .classes("flex-1")
+                            )
+                            self.frame_select = (
+                                ui.select(
+                                    {0: "F0"},
+                                    value=self.robot.frame,
+                                    label=self.tr("coord.frame"),
+                                    on_change=lambda e: self.select_coords(frame=e.value),
+                                )
+                                .props("filled dense options-dense")
+                                .classes("flex-1")
+                            )
+                        ui.label(self.tr("coord.system_hint")).classes("tp-muted mt-2")
                     with self.card(self.tr("pos.title")):
                         self.other_title = ui.label("").classes("tp-muted")
                         self.other_values = ui.label("").classes(
@@ -406,6 +486,13 @@ class Pendant:
                         "unelevated no-caps color=primary size=lg"
                     ).classes("w-full h-16 text-[17px]")
             self.update_increment_unit()
+
+    async def select_coords(self, tool: int | None = None, frame: int | None = None) -> None:
+        tool = self.robot.tool if tool is None else int(tool)
+        frame = self.robot.frame if frame is None else int(frame)
+        if (tool, frame) != (self.robot.tool, self.robot.frame):
+            await self.act(self.robot.set_coordinate_system, tool, frame)
+            self.ws.coord_revision += 1
 
     def set_jog_mode(self, mode: str) -> None:
         self.jog_mode = mode
@@ -484,8 +571,11 @@ class Pendant:
                             self.step_btn.on("click", lambda: self.run_if_auto(True))
                         self.run_hint = ui.label(self.tr("prog.hold_hint")).classes("tp-muted")
                         with ui.row().classes("items-center gap-2"):
-                            ui.switch(self.tr("prog.auto"), value=self.auto_run,
-                                      on_change=lambda e: self.set_auto(bool(e.value)))  # fmt: skip
+                            ui.switch(
+                                self.tr("prog.auto"),
+                                value=self.auto_run,
+                                on_change=lambda e: self.set_auto(bool(e.value)),
+                            )
                             ui.icon("info_outline").classes("text-[var(--text-3)]").tooltip(
                                 self.tr("prog.auto_hint")
                             )
@@ -557,22 +647,25 @@ class Pendant:
             with ui.element("div").classes("tp-item" + (" current" if current else "")):
                 badge = ui.label(str(i + 1)).classes("tp-badge cursor-pointer")
                 badge.on("click", lambda _, n=i: self.set_from_step(n))
-                ui.label(step.point).classes("font-semibold flex-1 min-w-0 truncate")
-                chip = ui.label(self.tr(f"step.{step.motion.value}")).classes(
-                    f"tp-chip cursor-pointer {'lin' if step.motion is Motion.LINEAR else 'ptp'}"
-                )
-                chip.on("click", lambda _, s=step: self.toggle_motion(s))
-                ui.number(value=step.velocity, min=1, max=100, precision=0, suffix="%",
-                          on_change=lambda e, s=step: self.set_step(s, "velocity", e.value)).props(
-                    "dense borderless input-class=text-right").classes("w-16 tp-mono")  # fmt: skip
-                ui.number(value=step.blending, min=0, max=200, precision=0, suffix="mm",
-                          on_change=lambda e, s=step: self.set_step(s, "blending", e.value)).props(
-                    "dense borderless input-class=text-right").classes("w-20 tp-mono").tooltip(
-                    self.tr("step.blending"))  # fmt: skip
+                with (
+                    ui.row()
+                    .classes("flex-1 min-w-0 items-center gap-2 no-wrap cursor-pointer")
+                    .on("click", lambda _, n=i: self.edit_step(n))
+                    .mark(f"step-{i}")
+                ):
+                    ui.label(step.point).classes("font-semibold min-w-0 truncate")
+                    ui.space()
+                    kind = {Motion.LINEAR: "lin", Motion.PTP: "ptp", Motion.JOINT: "joint"}[step.motion]
+                    ui.label(motion_label(self, step)).classes(f"tp-chip {kind}")
+                    ui.label(blend_label(self, step)).classes("tp-chip" + (" blend" if step.blended else ""))
+                    vel = self.tr("step.default") if step.velocity < 0 else f"{step.velocity:.0f} %"
+                    ui.label(vel).classes("tp-mono tp-muted w-16 text-right")
                 with ui.button(icon="more_vert").props("flat round dense").classes("text-[var(--text-2)]"):
                     with ui.menu():
-                        ui.menu_item("↑", on_click=lambda n=i: self.move_step(n, -1))
-                        ui.menu_item("↓", on_click=lambda n=i: self.move_step(n, 1))
+                        ui.menu_item(self.tr("coord.edit"), on_click=lambda n=i: self.edit_step(n))
+                        ui.menu_item(self.tr("step.duplicate"), on_click=lambda n=i: self.duplicate_step(n))
+                        ui.menu_item(self.tr("step.up"), on_click=lambda n=i: self.move_step(n, -1))
+                        ui.menu_item(self.tr("step.down"), on_click=lambda n=i: self.move_step(n, 1))
                         ui.menu_item(self.tr("common.delete"), on_click=lambda n=i: self.delete_step(n))
 
     def set_from_step(self, i: int) -> None:
@@ -583,18 +676,21 @@ class Pendant:
         self.ws.program.add_step(name)
         self.ws.changed()
 
-    def toggle_motion(self, step: Any) -> None:
-        step.motion = Motion.LINEAR if step.motion is Motion.JOINT else Motion.JOINT
-        self.ws.changed()
+    async def edit_step(self, i: int) -> None:
+        try:
+            new = await edit_step(self, i)
+        except ValueError as exc:
+            ui.notify(str(exc), type="negative", position="top")
+            return
+        if new is not None and i < len(self.ws.program.steps):
+            self.ws.program.steps[i] = new
+            self.ws.changed()
 
-    def set_step(self, step: Any, attr: str, value: Any) -> None:
-        if value is None:
-            return
-        value = float(value)
-        if attr == "velocity" and not 0 < value <= 100:
-            return
-        setattr(step, attr, max(0.0, value))
-        self.ws.dirty = True  # no redraw (the input keeps the focus)
+    def duplicate_step(self, i: int) -> None:
+        import copy
+
+        self.ws.program.steps.insert(i + 1, copy.deepcopy(self.ws.program.steps[i]))
+        self.ws.changed()
 
     def move_step(self, i: int, offset: int) -> None:
         self.ws.program.move_step(i, offset)
@@ -695,6 +791,17 @@ class Pendant:
         self.ws.revision += 1
         self.from_step = 0
 
+    async def load_coords(self) -> None:
+        """Tools and frames of the RC after connecting (once for all tabs)."""
+        if self.ws.loading_coords:
+            return
+        self.ws.loading_coords = True
+        try:
+            for page in self.coord_pages.values():
+                await page.read()
+        finally:
+            self.ws.loading_coords = False
+
     # ------------------------------------------------------------------ messages
 
     def build_messages(self) -> None:
@@ -713,8 +820,13 @@ class Pendant:
         colors = {"ERROR": "var(--red)", "FATAL_ERROR": "var(--red)", "WARNING": "var(--orange)"}
         for m in messages:
             with ui.element("div").classes("tp-item"):
-                ui.icon("error_outline" if "ERROR" in m.severity else "warning_amber" if m.severity == "WARNING"
-                        else "info_outline").style(f"color: {colors.get(m.severity, 'var(--blue)')}; font-size: 22px")  # fmt: skip
+                ui.icon(
+                    "error_outline"
+                    if "ERROR" in m.severity
+                    else "warning_amber"
+                    if m.severity == "WARNING"
+                    else "info_outline"
+                ).style(f"color: {colors.get(m.severity, 'var(--blue)')}; font-size: 22px")
                 with ui.column().classes("gap-0 flex-1 min-w-0"):
                     ui.label(m.text or "–").classes("font-medium")
                     ui.label(f"{m.severity} · 16#{m.code:04X}").classes("tp-muted tp-mono")
@@ -744,8 +856,11 @@ class Pendant:
             )
         self.pill_text.set_text(text)
         self.put(self.pill, "classes", f"tp-pill {kind}")
-        self.header_sub.set_text(" · ".join(x for x in (s.manufacturer, s.target) if x) if s.phase is not
-                                 Phase.DISCONNECTED else self.tr("phase.disconnected"))  # fmt: skip
+        self.header_sub.set_text(
+            " · ".join(x for x in (s.manufacturer, s.target) if x)
+            if s.phase is not Phase.DISCONNECTED
+            else self.tr("phase.disconnected")
+        )
         # connection page
         connected = s.phase in (Phase.READY, Phase.LOST)
         self.connect_btn.set_text(self.tr("conn.disconnect" if connected else "conn.connect"))
@@ -779,7 +894,9 @@ class Pendant:
         self.other_title.set_text(self.tr("pos.tcp" if axes else "pos.joints"))
         self.other_values.set_text(
             "\n".join(f"{n:<3}{_fmt(v):>12}" for n, v in zip(names, other, strict=True))
-            if s.position_valid else self.tr("pos.invalid"))  # fmt: skip
+            if s.position_valid
+            else self.tr("pos.invalid")
+        )
         # program page
         if self.seen_revision != self.ws.revision:
             self.seen_revision = self.ws.revision
@@ -795,6 +912,18 @@ class Pendant:
         for btn in (self.start_btn, self.step_btn):
             # stays enabled while it is held: disabling it would end the pointer capture -> release
             btn.set_enabled(ready and s.enabled and bool(self.ws.program.steps) and (not busy or self.held))
+        # tools and frames
+        coord_key = (self.ws.coord_revision, s.tool, s.frame, s.highest_tool, s.highest_frame)
+        if coord_key != self.seen_coords:
+            self.seen_coords = coord_key
+            for page in self.coord_pages.values():
+                page.draw.refresh()
+            self.tool_select.set_options(coords.options(self, coords.TOOL), value=s.tool)
+            self.frame_select.set_options(coords.options(self, coords.FRAME), value=s.frame)
+        if ready and old.phase is not Phase.READY and not (self.ws.tools or self.ws.frames):
+            background_tasks.create(self.load_coords(), name="read tools and frames")
+        for page in self.coord_pages.values():
+            page.read_btn.set_enabled(ready and s.activity is Activity.IDLE)
         # messages
         if [m.code for m in s.messages] != [m.code for m in old.messages] or len(s.messages) != len(
             old.messages

@@ -14,8 +14,10 @@ Browser / Tablet  --HTTP-->  srci-teach (Python, NiceGUI)  --TCP-->  SPS-Gateway
 | Seite | Inhalt |
 |---|---|
 | **Verbindung** | Roboter (IP/Port/Telegrammlänge des Gateways) oder SDK-Simulator, Roboter ein/aus, Quittieren (GroupReset), Geschwindigkeits-Override, Roboterdaten |
-| **Bewegen** | Tippen in Achsen, Basis oder Werkzeug, stufenlos oder in Schritten (0,1 / 1 / 10), Tippgeschwindigkeit, Live-Position (Achsen und TCP), „Punkt teachen“ |
-| **Programm** | Punkte (anfahren, neu teachen, umbenennen, löschen), Ablauf aus PTP-/LIN-Schritten mit Geschwindigkeit und Überschleifen, Start, Einzelschritt, Sichern und Öffnen als JSON |
+| **Bewegen** | Tippen in Achsen, Basis oder Werkzeug, stufenlos oder in Schritten (0,1 / 1 / 10), Tippgeschwindigkeit. Auswahl von Werkzeug und Koordinatensystem; diese gelten für die TCP-Anzeige, das kartesische Tippen und das Teachen (der Punkt merkt sich Tool und Frame). Live-Position, „Punkt teachen“ |
+| **Programm** | Punkte (anfahren, neu teachen, umbenennen, löschen) und Ablauf. Einen Schritt antippen öffnet den Editor: Bewegungsart **LIN** (MoveLinearAbsolute), **PTP** (MoveDirectAbsolute, kartesisches Ziel achsinterpoliert) oder **Joint** (MoveAxesAbsolute, Achswinkel), jeweils mit Genauhalt oder Überschleifen (Art laut Spez, Wert vor dem Punkt und – bei „zwei Radien“ – nach dem Punkt), dazu Geschwindigkeit, Beschleunigung, Verzögerung und Ruck in % oder „Standard“ der RC. Start, Einzelschritt, Sichern und Öffnen als JSON |
+| **Werkzeuge** | Tool-Tabelle der Robotersteuerung lesen (ReadToolData) und einzelne Tools schreiben (WriteToolData): X, Y, Z, Rx, Ry, Rz, Last-Nr., externer TCP. Lokale Bezeichnungen wie „Greifer“ stehen in `programs/labels.json`. T0 (Flansch) ist fest |
+| **Koordinatensysteme** | Frames lesen und schreiben (Read/WriteFrameData), mit Bezugssystem. „Aktuelle TCP-Position übernehmen“ setzt den Ursprung eines Frames auf den TCP. F0 (Basis) ist fest |
 | **Meldungen** | Meldungen der Robotersteuerung und der letzte Fehler |
 
 Immer sichtbar: der Status („Bereit · Ein“, „Fährt“, „Störung“ …) und die rote **STOPP**-Taste

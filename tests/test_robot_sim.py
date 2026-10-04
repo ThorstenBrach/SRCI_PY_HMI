@@ -160,3 +160,32 @@ def test_motion_after_stop_reset_and_jog(robot: RobotService) -> None:
 def _quiet(fn: object, *args: object, **kwargs: object) -> None:
     with contextlib.suppress(Exception):
         fn(*args, **kwargs)  # type: ignore[operator]
+
+
+def test_tools_and_frames(robot: RobotService) -> None:
+    from srci_teach.robot import CoordData
+
+    s = robot.snapshot()
+    assert s.highest_tool >= 1 and s.highest_frame >= 1
+    robot.write_tool(CoordData(1, [0.0, 0.0, 150.0, 0.0, 0.0, 0.0], load_no=1))
+    robot.write_frame(CoordData(1, [500.0, 0.0, 0.0, 0.0, 0.0, 90.0]))
+    assert robot.read_tools()[1].values[2] == 150.0
+    assert robot.read_frames()[1].values == [500.0, 0.0, 0.0, 0.0, 0.0, 90.0]
+    with pytest.raises(ValueError):
+        robot.write_tool(CoordData(0, [0.0] * 6))
+    robot.set_coordinate_system(1, 1)
+    assert (robot.snapshot().tool, robot.snapshot().frame) == (1, 1)
+
+
+def test_all_motion_types_with_dynamics(robot: RobotService) -> None:
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([0.0] * 6, [0.0] * 6, name="A")
+    p.add_point([20.0, 0, 0, 0, 0, 0], [20.0, 0, 0, 0, 0, 0], name="B")
+    for motion in Motion:
+        # the harness supports CORNER_DISTANCE and RAMP_OVERLAP (SDK default: none)
+        p.add_step("B", motion, 50.0, 5.0, blending_mode="CORNER_DISTANCE", acceleration=50.0)
+        p.add_step("A", motion, 50.0, 50.0, blending_mode="RAMP_OVERLAP")
+        p.add_step("B", motion, -1.0)
+    assert robot.run_program(p, hold=False) == 9
+    assert joints(robot)[0] == 20.0

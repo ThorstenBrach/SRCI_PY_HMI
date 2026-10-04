@@ -83,3 +83,28 @@ def test_json_round_trip(tmp_path: Path) -> None:
 def test_newer_format_is_refused() -> None:
     with pytest.raises(ValueError):
         Program.from_dict({"format": 99})
+
+
+def test_step_dynamics_and_blending() -> None:
+    p = Program()
+    p.add_point(J, C)
+    s = p.add_step("P1", Motion.PTP, 50.0, 5.0, blending_mode="CORNER_DISTANCE_2R", blending_post=3.0,
+                   acceleration=40.0)  # fmt: skip
+    assert s.blended and s.blending == 5.0 and s.blending_post == 3.0
+    assert (s.deceleration, s.jerk) == (-1.0, -1.0)  # default of the RC
+    assert p.add_step("P1", velocity=-1.0).velocity == -1.0
+    with pytest.raises(ValueError):
+        p.add_step("P1", acceleration=0.0)
+    with pytest.raises(ValueError):
+        p.add_step("P1", blending_mode="SPIRAL")
+    q = Program.from_json(p.to_json())
+    assert q.to_dict() == p.to_dict()
+
+
+def test_format_1_programs_are_read() -> None:
+    old = {"format": 1, "name": "alt", "points": [{"name": "A", "joints": J, "cartesian": C}],
+           "steps": [{"point": "A", "motion": "linear", "velocity": 30.0, "blending": 20.0},
+                     {"point": "A", "motion": "joint", "velocity": 30.0, "blending": 0.0}]}  # fmt: skip
+    p = Program.from_dict(old)
+    assert p.steps[0].blending_mode == "CORNER_DISTANCE" and p.steps[0].blending == 20.0
+    assert p.steps[1].exact_stop

@@ -58,7 +58,26 @@ async def run_user(user: User, ws: Workspace) -> None:
     await user.should_see(marker="add-step-P1")  # the list is redrawn by the UI timer
     user.find(marker="add-step-P1").click()
     await wait_for(lambda: len(ws.program.steps) == 1)
-    await user.should_see("PTP")
+    await user.should_see("Joint")
+    # step editor: LIN, blended (corner distance 10 mm), velocity 50 %
+    user.find(marker="step-0").click()
+    await user.should_see(marker="step-apply")
+    user.find(marker="motion-toggle").elements.pop().set_value("linear")
+    user.find(marker="blend-toggle").elements.pop().set_value(True)
+    user.find(marker="step-apply").click()
+    await wait_for(lambda: ws.program.steps[0].motion.value == "linear")
+    step = ws.program.steps[0]
+    assert step.blending_mode == "CORNER_DISTANCE" and step.blending == 10.0
+    await user.should_see("LIN ⤳")
+    # tool 1 on the robot
+    user.find(kind=ui.button, content="Werkzeuge").click()
+    await user.should_see(marker="edit-tool-1")
+    user.find(marker="edit-tool-1").click()
+    await user.should_see(marker="coord-write")
+    numbers = [n for n in user.find(kind=ui.number).elements if n.props.get("label") == "Z"]
+    numbers[-1].set_value(150.0)
+    user.find(marker="coord-write").click()
+    await wait_for(lambda: len(ws.tools) > 1 and ws.tools[1].values[2] == 150.0)
 
 
 def test_connect_teach_and_append_step(tmp_path: Path) -> None:

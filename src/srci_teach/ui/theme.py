@@ -55,6 +55,7 @@ html, body {
           font-weight: 500; transition: background .15s ease; }
 .q-btn.tp-nav:hover { background: var(--card-2); }
 .q-btn.tp-nav.active { background: var(--blue) !important; color: #fff !important; }
+.q-btn.tp-nav .q-btn__content { flex-wrap: nowrap; white-space: nowrap; }
 .q-btn.tp-nav .q-icon { font-size: 20px; }
 
 /* content */
@@ -72,7 +73,7 @@ html, body {
 .tp-key { color: var(--text-2); }
 .tp-val { font-weight: 500; text-align: right; }
 .tp-muted { color: var(--text-2); font-size: 13px; }
-.tp-mono { font-family: "SF Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+.tp-mono, .tp-mono-in input { font-family: "SF Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
            font-variant-numeric: tabular-nums; }
 
 /* status pill */
@@ -139,6 +140,8 @@ body.body--dark .tp-seg .q-btn.bg-primary { background: #636366 !important; }
            background: var(--card-2); color: var(--text-2); }
 .tp-chip.lin { color: var(--indigo); }
 .tp-chip.ptp { color: var(--blue); }
+.tp-chip.joint { color: var(--green); }
+.tp-chip.blend { color: var(--orange); }
 
 .tp-empty { color: var(--text-2); text-align: center; padding: 28px 12px; }
 .tp-banner { border-radius: 14px; padding: 12px 16px; background: rgba(255,149,0,.12); color: var(--text); }

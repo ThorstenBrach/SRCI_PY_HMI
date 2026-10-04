@@ -21,6 +21,7 @@ SRCI is no safety interface: the emergency stop of the robot stays the only safe
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
 import threading
 import time
@@ -38,9 +39,14 @@ from srci.fb import (
     MC_GroupResetFB,
     MC_GroupStopFB,
     MC_MoveAxesAbsoluteFB,
+    MC_MoveDirectAbsoluteFB,
     MC_MoveLinearAbsoluteFB,
     MC_ReadActualPositionCyclicFB,
     MC_ReadActualPositionFB,
+    MC_ReadFrameDataFB,
+    MC_ReadToolDataFB,
+    MC_WriteFrameDataFB,
+    MC_WriteToolDataFB,
 )
 from srci.transport import TcpTransport
 from srci.transport.base import Transport
@@ -118,6 +124,21 @@ class Snapshot:
     messages: list[Message] = field(default_factory=list)
     program_step: int = -1  # index of the running / last started step
     simulator: bool = False
+    tool: int = 0  # Cartesian position (and jogging) in this tool ...
+    frame: int = 0  # ... and this frame
+    highest_tool: int = 0  # highest tool / frame index of the RC (ExchangeConfiguration)
+    highest_frame: int = 0
+
+
+@dataclass
+class CoordData:
+    """A tool (TCP relative to the flange) or a frame (relative to its reference frame)."""
+
+    no: int
+    values: list[float]  # X, Y, Z [mm], Rx, Ry, Rz [deg]
+    load_no: int = 0  # tool: load of the tool
+    external_tcp: bool = False  # tool: stationary tool (TCP outside the robot)
+    reference: int = 0  # frame: reference frame
 
 
 class RobotService:
@@ -145,6 +166,8 @@ class RobotService:
         self._watchdog: threading.Thread | None = None
         self._closing = threading.Event()
         self.override = 20.0
+        self.tool = 0  # tool / frame of the displayed Cartesian position, of jogging and teaching
+        self.frame = 0
         self.listeners: list[Callable[[], None]] = []  # called after a change of phase / activity
 
     # ------------------------------------------------------------------ state
@@ -174,7 +197,8 @@ class RobotService:
 
     def snapshot(self) -> Snapshot:
         s = Snapshot(phase=self._phase, activity=self._activity, error=self._error,
-                     program_step=self._program_step, simulator=self._target.simulator)  # fmt: skip
+                     program_step=self._program_step, simulator=self._target.simulator,
+                     tool=self.tool, frame=self.frame)  # fmt: skip
         t = self._target
         s.target = "SDK simulator" if t.simulator else f"{t.host}:{t.port}"
         client = self._client
@@ -200,6 +224,7 @@ class RobotService:
         s.srci_version = f"{v.MajorVersion}.{v.MinorVersion}" if v.MajorVersion else ""
         joints, cartesian, valid = self._position()
         s.joints, s.cartesian, s.position_valid = joints, cartesian, valid
+        s.highest_tool, s.highest_frame = _highest(client, "Tool"), _highest(client, "Frame")
         s.messages = [Message(m.Severity.name, int(m.MessageCode), m.MessageText)
                       for m in program.message_log if m.MessageCode][:50]  # fmt: skip
         return s
@@ -263,6 +288,7 @@ class RobotService:
         cyc = MC_ReadActualPositionCyclicFB()
         cyc.ParCmd.ReadJointPosition = True
         cyc.ParCmd.ReadCartesianPosition = True
+        cyc.ParCmd.ToolNo, cyc.ParCmd.FrameNo = self.tool, self.frame
         try:
             client.enable(cyc, timeout=3.0)
             self._cyclic = cyc
@@ -277,8 +303,10 @@ class RobotService:
         client = self._client
         if client is None or self._phase not in (Phase.READY, Phase.CONNECTING):
             return
+        fb = MC_ReadActualPositionFB()
+        fb.ParCmd.ToolNo, fb.ParCmd.FrameNo = self.tool, self.frame
         with self._poll_lock, contextlib.suppress(CommandError, WaitTimeoutError, SrciError):
-            self._polled = client.execute(MC_ReadActualPositionFB(), timeout=2.0).OutCmd
+            self._polled = client.execute(fb, timeout=2.0).OutCmd
 
     def disconnect(self) -> None:
         """Robot off (if possible) and close the connection."""
@@ -329,8 +357,12 @@ class RobotService:
     # ------------------------------------------------------------------ commands
 
     @contextlib.contextmanager
-    def _command(self, what: str, activity: Activity | None = None) -> Iterator[SrciClient]:
-        if not self._busy.acquire(timeout=0.2):
+    def _command(
+        self, what: str, activity: Activity | None = None, wait: float = 5.0
+    ) -> Iterator[SrciClient]:
+        """Exclusive use of the client for a command sequence; waits up to ``wait`` s for a running
+        one (e.g. reading the tool table after connecting)."""
+        if not self._busy.acquire(timeout=wait):
             raise SrciError(f"{what}: another command is running")
         try:
             client = self.client
@@ -402,17 +434,101 @@ class RobotService:
             self._set(error=f"GroupStop: {_text(exc)}")
             raise
 
+    # ------------------------------------------------------------------ tools and frames
+
+    def set_coordinate_system(self, tool: int, frame: int) -> None:
+        """Tool and frame of the displayed Cartesian position, of Cartesian jogging and of
+        taught points."""
+        self.tool, self.frame = int(tool), int(frame)
+        cyc, client = self._cyclic, self._client
+        if cyc is not None and client is not None:
+            par = copy.deepcopy(cyc.ParCmd)
+            par.ToolNo, par.FrameNo = self.tool, self.frame
+            client.set(cyc, ParCmd=par)
+        self._polled = None  # the last polled position was in the old tool/frame
+        if self.connected:
+            self._poll_position()
+
+    def read_position(self, tool: int, frame: int) -> list[float]:
+        """Cartesian position of ``tool`` in ``frame`` (ReadActualPosition), e.g. to take the TCP
+        as the origin of a new frame."""
+        with self._command("ReadActualPosition") as client:
+            fb = MC_ReadActualPositionFB()
+            fb.ParCmd.ToolNo, fb.ParCmd.FrameNo = tool, frame
+            c = client.execute(fb, timeout=5.0).OutCmd.ActualCartesianPosition
+            return [getattr(c, n) for n in CARTESIAN]
+
+    def read_tools(self) -> list[CoordData]:
+        """All tools of the RC (index 0 .. HighestToolIndex, ReadToolData)."""
+        with self._command("ReadToolData") as client:
+            highest = _highest(client, "Tool")
+            tools = []
+            for no in range(highest + 1):
+                fb = MC_ReadToolDataFB()
+                fb.ParCmd.ToolNo = no
+                d = client.execute(fb, timeout=5.0).OutCmd.ToolData
+                tools.append(
+                    CoordData(no, [getattr(d, n) for n in CARTESIAN], int(d.LoadNo), bool(d.ExternalTCP))
+                )
+            return tools
+
+    def write_tool(self, tool: CoordData) -> None:
+        """Write a tool to the RC (WriteToolData; tool 0 is the flange and cannot be changed)."""
+        if tool.no < 1:
+            raise ValueError("tool 0 is the flange of the robot")
+        with self._command("WriteToolData") as client:
+            fb = MC_WriteToolDataFB()
+            fb.ParCmd.ToolNo = tool.no
+            d = fb.ParCmd.ToolData
+            for name, value in zip(CARTESIAN, tool.values, strict=True):
+                setattr(d, name, float(value))
+            d.LoadNo, d.ExternalTCP = tool.load_no, tool.external_tcp
+            client.execute(fb, timeout=5.0)
+
+    def read_frames(self) -> list[CoordData]:
+        """All frames of the RC (index 0 .. HighestFrameIndex, ReadFrameData)."""
+        with self._command("ReadFrameData") as client:
+            highest = _highest(client, "Frame")
+            frames = []
+            for no in range(highest + 1):
+                fb = MC_ReadFrameDataFB()
+                fb.ParCmd.FrameNo = no
+                d = client.execute(fb, timeout=5.0).OutCmd.FrameData
+                frames.append(
+                    CoordData(no, [getattr(d, n) for n in CARTESIAN], reference=int(d.ReferenceFrame))
+                )
+            return frames
+
+    def write_frame(self, frame: CoordData) -> None:
+        """Write a frame to the RC (WriteFrameData; frame 0 is the world/base frame)."""
+        if frame.no < 1:
+            raise ValueError("frame 0 is the base frame of the robot")
+        if frame.reference == frame.no:
+            raise ValueError("a frame cannot refer to itself")
+        with self._command("WriteFrameData") as client:
+            fb = MC_WriteFrameDataFB()
+            fb.ParCmd.FrameNo = frame.no
+            d = fb.ParCmd.FrameData
+            for name, value in zip(CARTESIAN, frame.values, strict=True):
+                setattr(d, name, float(value))
+            d.ReferenceFrame = frame.reference
+            client.execute(fb, timeout=5.0)
+
     # ------------------------------------------------------------------ jog
 
     def jog_press(self, mode: JogMode, axis: int, direction: int, speed: float,
-                  increment: float = 0.0, tool: int = 0, frame: int = 0) -> None:  # fmt: skip
+                  increment: float = 0.0, tool: int | None = None, frame: int | None = None) -> None:  # fmt: skip
         """Start jogging ``axis`` (0..5: X/J1 .. Rz/J6) in ``direction`` (+1 / -1) with ``speed`` %
         of the jog velocity. ``increment`` > 0: move only this distance [mm or deg] (step jog).
-        The motion continues only while :meth:`jog_alive` is called (hold-to-run)."""
+        Cartesian jogging (JOG_FRAME / JOG_TOOL) uses ``tool`` / ``frame`` (default: the
+        coordinate system of :meth:`set_coordinate_system`). The motion continues only while
+        :meth:`jog_alive` is called (hold-to-run)."""
+        tool = self.tool if tool is None else tool
+        frame = self.frame if frame is None else frame
         if axis not in range(6) or direction not in (1, -1):
             raise ValueError("axis 0..5, direction +1/-1")
         self._jog_alive = time.monotonic()
-        with self._command("GroupJog") as client:
+        with self._command("GroupJog", wait=0.5) as client:
             if self._enable is None:
                 raise SrciError("GroupJog: switch the robot on first")
             self._jog_off()
@@ -473,7 +589,8 @@ class RobotService:
     # ------------------------------------------------------------------ teach
 
     def current_position(self) -> tuple[list[float], list[float]]:
-        """The actual joint and Cartesian position (fresh, for teaching)."""
+        """The actual joint and Cartesian position (fresh, for teaching; Cartesian in the tool and
+        frame of :meth:`set_coordinate_system`)."""
         if self._cyclic is None:
             if not self.connected:
                 raise SrciError("not connected")
@@ -560,14 +677,16 @@ class RobotService:
 
 
 def _motion_block(step: Step, point: Point) -> Any:
+    """The function block of a step: JOINT -> MoveAxesAbsolute, PTP -> MoveDirectAbsolute,
+    LINEAR -> MoveLinearAbsolute, with the dynamics and blending of the step."""
     fb: Any
-    if step.motion == Motion.LINEAR:
-        fb = MC_MoveLinearAbsoluteFB()
+    if step.motion in (Motion.LINEAR, Motion.PTP):
+        fb = MC_MoveLinearAbsoluteFB() if step.motion == Motion.LINEAR else MC_MoveDirectAbsoluteFB()
         pos = fb.ParCmd.Position
         for name, value in zip(CARTESIAN, point.cartesian, strict=True):
             setattr(pos, name, value)
         fb.ParCmd.ToolNo, fb.ParCmd.FrameNo = point.tool, point.frame
-        # the JAKA MiniCobo accepts only TurnMode FREE (see SRCI_PY examples/jaka_minicobo)
+        # the JAKA MiniCobo accepts only TurnMode FREE / ConfigMode FREE (SRCI_PY examples/jaka_minicobo)
         fb.ParCmd.TurnMode = TurnMode.FREE
         cm = fb.ParCmd.ConfigMode
         cm.Shoulder, cm.Elbow, cm.Wrist = ArmConfigShoulder.FREE, ArmConfigElbow.FREE, ArmConfigWrist.FREE
@@ -576,13 +695,23 @@ def _motion_block(step: Step, point: Point) -> Any:
         jp = fb.ParCmd.JointPosition
         for name, value in zip(JOINTS, point.joints, strict=True):
             setattr(jp, name, value)
-    fb.ParCmd.VelocityRate = step.velocity
-    if step.exact_stop:
-        fb.ParCmd.BlendingMode = BlendingMode.EXACT_STOP
-    else:
-        fb.ParCmd.BlendingMode = BlendingMode.CORNER_DISTANCE
-        fb.ParCmd.BlendingParameter[0] = step.blending
+    par = fb.ParCmd
+    par.VelocityRate, par.AccelerationRate = step.velocity, step.acceleration
+    par.DecelerationRate, par.JerkRate = step.deceleration, step.jerk
+    par.BlendingMode = BlendingMode[step.blending_mode]
+    par.BlendingParameter[0] = step.blending if step.blended else 0.0
+    par.BlendingParameter[1] = step.blending_post if step.blended else 0.0
     return fb
+
+
+def _highest(client: SrciClient, kind: str) -> int:
+    """Highest usable tool / frame index: the one of the RC, limited by the size of the tables of
+    the library (``UnifiedToolIndex``, ``srci.configure(TOOL_MAX=...)``)."""
+    state = client.program.axes_group.State
+    return min(
+        int(getattr(state.ConfigurationData, f"Highest{kind}Index")),
+        int(getattr(state, f"Unified{kind}Index")),
+    )
 
 
 def _text(exc: BaseException) -> str:

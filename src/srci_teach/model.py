@@ -1,9 +1,16 @@
 """Taught points and programs (pure data, no robot, no UI).
 
 A program is a list of points (taught positions) and a list of steps (motions to points). A
-point stores both the joint and the Cartesian position, so a step can move to it with a joint
-motion (MoveAxesAbsolute, exact and independent of the configuration) or a linear motion
-(MoveLinearAbsolute, straight path of the TCP). Programs are stored as JSON.
+point stores both the joint and the Cartesian position (in the tool and frame it was taught
+with), so a step can move to it with
+
+* ``JOINT``: MoveAxesAbsolute to the joint angles (exact, independent of tool and configuration),
+* ``PTP``: MoveDirectAbsolute to the Cartesian position (joint interpolated, fastest path),
+* ``LINEAR``: MoveLinearAbsolute to the Cartesian position (straight path of the TCP).
+
+Every step has its own dynamics (velocity, acceleration, deceleration, jerk in % of the
+reference dynamics of the RC, -1 = default of the RC) and blending (BlendingMode of the spec,
+parameter before / after the point). Programs are stored as JSON.
 """
 
 from __future__ import annotations
@@ -15,13 +22,28 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+DEFAULT = -1.0  # dynamics value "not set": the RC uses its default dynamics
+# BlendingMode of the spec (table 6-9) - names of srci.types.BlendingMode
+BLENDING_MODES = ("EXACT_STOP", "CORNER_DISTANCE", "CORNER_DISTANCE_1R", "CORNER_DISTANCE_2R",
+                  "MAX_CORNER_DEVIATION", "DEFINED_VELOCITY", "RAMP_OVERLAP")  # fmt: skip
+# unit of BlendingParameter[0] / [1] per mode (None: not used)
+BLENDING_UNITS: dict[str, tuple[str | None, str | None]] = {
+    "EXACT_STOP": (None, None),
+    "CORNER_DISTANCE": ("mm", None),
+    "CORNER_DISTANCE_1R": ("mm", None),
+    "CORNER_DISTANCE_2R": ("mm", "mm"),
+    "MAX_CORNER_DEVIATION": ("mm", None),
+    "DEFINED_VELOCITY": ("%", None),
+    "RAMP_OVERLAP": ("%", None),
+}
 JOINTS = ("J1", "J2", "J3", "J4", "J5", "J6")
 CARTESIAN = ("X", "Y", "Z", "Rx", "Ry", "Rz")
 
 
 class Motion(StrEnum):
     JOINT = "joint"  # MoveAxesAbsolute to the joint position of the point
+    PTP = "ptp"  # MoveDirectAbsolute to the Cartesian position (joint interpolated)
     LINEAR = "linear"  # MoveLinearAbsolute to the Cartesian position of the point
 
 
@@ -39,12 +61,33 @@ class Point:
 class Step:
     point: str  # name of the point
     motion: Motion = Motion.JOINT
-    velocity: float = 20.0  # % of the reference velocity of the RC
-    blending: float = 0.0  # corner distance [mm], 0 = exact stop
+    velocity: float = 20.0  # % of the reference velocity of the RC (-1 = default of the RC)
+    blending: float = 0.0  # BlendingParameter[0], e.g. corner distance before the point [mm]
+    blending_mode: str = "EXACT_STOP"  # name of the BlendingMode
+    blending_post: float = 0.0  # BlendingParameter[1], e.g. CORNER_DISTANCE_2R after the point [mm]
+    acceleration: float = DEFAULT  # % of the reference acceleration (-1 = default of the RC)
+    deceleration: float = DEFAULT  # %
+    jerk: float = DEFAULT  # %
+
+    def __post_init__(self) -> None:
+        self.motion = Motion(self.motion)
+        if self.blending_mode not in BLENDING_MODES:
+            raise ValueError(f"unknown BlendingMode {self.blending_mode!r}")
+        self.velocity = _rate(self.velocity, "velocity")
+        for name in ("acceleration", "deceleration", "jerk"):
+            setattr(self, name, _rate(getattr(self, name), name))
+        self.blending, self.blending_post = (
+            max(0.0, float(self.blending)),
+            max(0.0, float(self.blending_post)),
+        )
 
     @property
     def exact_stop(self) -> bool:
-        return self.blending <= 0.0
+        return self.blending_mode == "EXACT_STOP"
+
+    @property
+    def blended(self) -> bool:
+        return not self.exact_stop
 
 
 @dataclass
@@ -110,9 +153,14 @@ class Program:
     # ------------------------------------------------------------------ steps
 
     def add_step(self, point: str, motion: Motion = Motion.JOINT, velocity: float = 20.0,
-                 blending: float = 0.0, index: int | None = None) -> Step:  # fmt: skip
+                 blending: float = 0.0, index: int | None = None, **dynamics: Any) -> Step:  # fmt: skip
+        """Append (or insert at ``index``) a motion to ``point``. ``blending`` > 0 without a
+        ``blending_mode`` means CORNER_DISTANCE (format 1); further fields of :class:`Step` as
+        keyword arguments (``blending_mode``, ``blending_post``, ``acceleration`` ...)."""
         self.point(point)  # KeyError if unknown
-        step = Step(point, Motion(motion), _velocity(velocity), max(0.0, float(blending)))
+        if blending > 0.0 and "blending_mode" not in dynamics:
+            dynamics["blending_mode"] = "CORNER_DISTANCE"
+        step = Step(point, Motion(motion), velocity, blending, **dynamics)
         self.steps.insert(len(self.steps) if index is None else index, step)
         return step
 
@@ -141,9 +189,11 @@ class Program:
             program.add_point(p["joints"], p["cartesian"], name=str(p["name"]),
                               tool=int(p.get("tool", 0)), frame=int(p.get("frame", 0)))  # fmt: skip
             program.points[-1].note = str(p.get("note", ""))
+        extra = ("blending_mode", "blending_post", "acceleration", "deceleration", "jerk")
         for s in data.get("steps", []):
             program.add_step(str(s["point"]), Motion(s.get("motion", Motion.JOINT)),
-                             float(s.get("velocity", 20.0)), float(s.get("blending", 0.0)))  # fmt: skip
+                             float(s.get("velocity", 20.0)), float(s.get("blending", 0.0)),
+                             **{k: s[k] for k in extra if k in s})  # fmt: skip
         return program
 
     def to_json(self) -> str:
@@ -169,8 +219,11 @@ def _check_len(values: list[float], n: int, what: str) -> None:
         raise ValueError(f"{what}: {n} values expected, got {len(values)}")
 
 
-def _velocity(v: float) -> float:
+def _rate(v: float, what: str) -> float:
+    """% of the reference dynamics: 0 < v <= 100, or -1 (default of the RC)."""
     v = float(v)
+    if v == DEFAULT:
+        return v
     if not 0.0 < v <= 100.0:
-        raise ValueError(f"velocity {v} % outside 0 < v <= 100")
+        raise ValueError(f"{what} {v} % outside 0 < v <= 100 (or -1 = default of the RC)")
     return v
