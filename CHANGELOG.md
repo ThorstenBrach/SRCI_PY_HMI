@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
    - edit points numerically with the kinematics of the RC, shift / mirror / rotate points
      (ShiftPosition)
    - measure tools (CalculateTool, 7 methods) and frames (CalculateFrame, 3 methods) with a wizard
+   - measuring also on robots without CalculateTool / CalculateFrame (profile Core, e.g. JAKA
+     MiniCobo): the HMI calculates 3- / 4-point TCP (least squares, with error), ABC world and
+     the 3- / 4- / 1-point frame itself (geometry.py, orientation as in the spec: R = Rz Ry Rx)
    - loads (Read/WriteLoadData) on the tools page
    - page I/O: digital inputs / outputs live, outputs switched by a tap, signal labels, integer
      and real registers
@@ -59,6 +62,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
  - Configuration of the RobotTask via `program.ParCfg` (renamed in SRCI_PY)
 
 ### Fixed
+ - Crash when the page was rebuilt (e.g. language switch) with a tool / frame above the ones the
+   select offered at that moment ("Invalid value: 1")
+ - The jog pad in dialogs is hidden when the RC can neither jog nor guide by hand
  - A frame chosen right after a tool (or the other way round) could undo the first choice
  - Dialogs opened from a list (tools, points, steps) were deleted with the list when it was redrawn
    (e.g. after writing a tool) - they now live in the page

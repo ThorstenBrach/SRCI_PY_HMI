@@ -104,6 +104,25 @@ async def run_user(user: User, ws: Workspace) -> None:
     user.find(marker="pad-frame").elements.pop().set_value(1)
     await wait_for(lambda: (ws.robot.tool, ws.robot.frame) == (1, 1))
     await wait_for(lambda: ws.robot.snapshot().joints[0] > before + 0.1)
+    user.find(kind=ui.button, content="Abbrechen").click()
+    # an RC without CalculateTool (profile Core, e.g. JAKA MiniCobo): the HMI calculates itself
+    reported = ws.robot.supported() or frozenset()
+    ws.robot.supported = lambda: reported - {"CalculateTool", "CalculateFrame"}  # type: ignore[method-assign]
+    await asyncio.sleep(0.5)  # the tool list is redrawn without the functions
+    user.find(marker="cal-tool-1").click()
+    await user.should_see("die HMI berechnet das Ergebnis selbst")
+    await user.should_see(marker="pad-tool")
+    user.find(kind=ui.button, content="Abbrechen").click()
+    # an RC that can neither jog nor guide by hand: the dialog shows no jog keys
+    ws.robot.supported = lambda: reported - {"CalculateTool", "CalculateFrame", "GroupJog", "FreeDrive"}  # type: ignore[method-assign]
+    await asyncio.sleep(0.5)
+    user.find(marker="cal-tool-1").click()
+    await user.should_see(marker="cal-take-tip1")
+    await asyncio.sleep(0.3)  # the timer of the page hides the pad
+    await user.should_not_see(marker="pad-tool")
+    # reload (as the language switch does) with T1 / F1 active: the selects must offer them
+    await user.open("/")
+    await user.should_see("Koordinatensystem")
 
 
 def test_connect_teach_and_append_step(tmp_path: Path) -> None:

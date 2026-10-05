@@ -190,10 +190,10 @@ async def edit_step(p: Pendant, index: int | None, step: Step | None = None) -> 
                 ).props("no-caps unelevated").classes("tp-seg").bind_visibility_from(
                     v, "motion", lambda m: m != "joint"
                 )
-                ui.select(coords.options(p, coords.TOOL), value=v["tool"], label=p.tr("coord.tool")).bind_value(
+                ui.select(coords.options(p, coords.TOOL, v["tool"]), value=v["tool"], label=p.tr("coord.tool")).bind_value(
                     v, "tool"
                 ).props("filled dense").classes("flex-1")
-                ui.select(coords.options(p, coords.FRAME), value=v["frame"], label=p.tr("coord.frame")).bind_value(
+                ui.select(coords.options(p, coords.FRAME, v["frame"]), value=v["frame"], label=p.tr("coord.frame")).bind_value(
                     v, "frame"
                 ).props("filled dense").classes("flex-1").bind_visibility_from(v, "motion", lambda m: m != "joint")
             with ui.element("div").classes("grid grid-cols-3 gap-3 w-full"):

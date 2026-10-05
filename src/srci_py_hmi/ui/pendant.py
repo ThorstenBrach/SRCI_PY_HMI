@@ -692,7 +692,7 @@ class Pendant:
                         with ui.row().classes("w-full gap-3 no-wrap"):
                             self.tool_select = (
                                 ui.select(
-                                    {0: "T0"},
+                                    coords.options(self, coords.TOOL),
                                     value=self.robot.tool,
                                     label=self.tr("coord.tool"),
                                     on_change=lambda e: self.select_coords(tool=e.value),
@@ -702,7 +702,7 @@ class Pendant:
                             )
                             self.frame_select = (
                                 ui.select(
-                                    {0: "F0"},
+                                    coords.options(self, coords.FRAME),
                                     value=self.robot.frame,
                                     label=self.tr("coord.frame"),
                                     on_change=lambda e: self.select_coords(frame=e.value),

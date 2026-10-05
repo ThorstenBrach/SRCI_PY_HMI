@@ -50,10 +50,10 @@ async def edit_point(p: Pendant, name: str) -> None:
         ui.label(p.tr("pos.tcp")).classes("tp-card-title mt-1")
         cart = _numbers(point.cartesian, CARTESIAN, False)
         with ui.row().classes("w-full gap-3 no-wrap"):
-            ui.select(coords.options(p, coords.TOOL), value=v["tool"], label=p.tr("coord.tool")).bind_value(
+            ui.select(coords.options(p, coords.TOOL, v["tool"]), value=v["tool"], label=p.tr("coord.tool")).bind_value(
                 v, "tool"
             ).props("filled dense").classes("flex-1")
-            ui.select(coords.options(p, coords.FRAME), value=v["frame"], label=p.tr("coord.frame")).bind_value(
+            ui.select(coords.options(p, coords.FRAME, v["frame"]), value=v["frame"], label=p.tr("coord.frame")).bind_value(
                 v, "frame"
             ).props("filled dense").classes("flex-1")
         ui.label(p.tr("point.coord_warning")).classes("tp-muted")

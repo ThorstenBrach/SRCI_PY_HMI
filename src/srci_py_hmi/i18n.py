@@ -454,6 +454,10 @@ TEXTS: dict[str, dict[str, str]] = {
     },
     # calibration
     "cal.measure": {"de": "Vermessen", "en": "Measure"},
+    "cal.local": {
+        "de": "Die Robotersteuerung bietet {f} nicht – die HMI berechnet das Ergebnis selbst.",
+        "en": "The robot controller does not offer {f} – the HMI calculates the result itself.",
+    },
     "cal.title": {"de": "{name} vermessen", "en": "Measure {name}"},
     "cal.method": {"de": "Methode", "en": "Method"},
     "cal.tool_hint": {

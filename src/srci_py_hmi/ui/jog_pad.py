@@ -45,6 +45,8 @@ class JogPad:
         self.tool_select: ui.select | None = None
         self.frame_select: ui.select | None = None
         self.seen_coords: tuple[object, ...] = ()
+        # hidden when the RC can neither jog nor guide by hand (set by the dialog: card / expansion)
+        self.container: ui.element | None = None
 
     def build(self) -> JogPad:
         p = self.p
@@ -122,6 +124,11 @@ class JogPad:
 
     def update(self, s: Snapshot) -> None:
         p = self.p
+        if self.container is not None:
+            movable = s.can("GroupJog") or s.can("FreeDrive")
+            self.container.set_visibility(movable)
+            if not movable:
+                return
         if self.tool_select is not None and self.frame_select is not None:
             coord_key = (p.ws.coord_revision, s.tool, s.frame, s.highest_tool, s.highest_frame)
             if coord_key != self.seen_coords:  # other choice on the jog page, tables read or written

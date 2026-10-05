@@ -32,11 +32,14 @@ def label(p: Pendant, kind: str, no: int) -> str:
     return f"{prefix}{no} {name}".strip()
 
 
-def options(p: Pendant, kind: str) -> dict[int, str]:
-    """Select options 0..highest (names from the read table and the local labels)."""
+def options(p: Pendant, kind: str, *include: int) -> dict[int, str]:
+    """Select options 0..highest (names from the read table and the local labels). Always with the
+    active tool / frame and ``include`` (e.g. the one stored in a step): a select refuses a value
+    that is not an option - before the RC has reported its tables (page just built) as well."""
     highest = p.snap.highest_tool if kind == TOOL else p.snap.highest_frame
     table = p.ws.tools if kind == TOOL else p.ws.frames
-    count = max(highest + 1, len(table), 1)
+    active = p.robot.tool if kind == TOOL else p.robot.frame
+    count = max(highest + 1, len(table), 1, active + 1, *(int(n) + 1 for n in include))
     return {no: label(p, kind, no) for no in range(count)}
 
 
@@ -58,6 +61,15 @@ class CoordPage:
     @property
     def can_read(self) -> bool:
         return self.p.snap.can(f"Read{self.function}")
+
+    @property
+    def can_measure(self) -> bool:
+        """The RC calculates (CalculateTool / CalculateFrame) or the HMI does (it needs the actual
+        position)."""
+        s = self.p.snap
+        return s.can("CalculateTool" if self.kind == TOOL else "CalculateFrame") or (
+            s.can("ReadActualPosition") and self.can_write
+        )
 
     @property
     def can_write(self) -> bool:
@@ -227,7 +239,7 @@ class CoordPage:
                 if data.no == 0 or not self.can_write:
                     ui.icon("lock").classes("text-[var(--text-3)]").tooltip(p.tr("coord.fixed"))
                 else:
-                    if p.snap.can("CalculateTool" if self.kind == TOOL else "CalculateFrame"):
+                    if self.can_measure:
                         ui.button(icon="straighten", on_click=lambda n=data.no: self.calibrate(n)).props(
                             "flat round dense"
                         ).classes("text-[var(--blue)]").tooltip(p.tr("cal.measure")).mark(
@@ -275,7 +287,7 @@ class CoordPage:
             else:
                 ref = (
                     ui.select(
-                        {k: v for k, v in options(p, FRAME).items() if k != d.no},
+                        {k: v for k, v in options(p, FRAME, d.reference).items() if k != d.no},
                         value=d.reference,
                         label=p.tr("coord.reference"),
                     )
@@ -341,8 +353,11 @@ def jog_expansion(p: Pendant) -> JogPad:
     """"Move the robot" inside a dialog (collapsed): the jog keys without leaving the dialog."""
     from srci_py_hmi.ui.jog_pad import JogPad  # jog_pad uses this module (tool / frame options)
 
-    with ui.expansion(p.tr("jog.in_dialog"), icon="open_with").classes("w-full tp-card-2").props("dense"):
-        return JogPad(p, compact=True).build()
+    with ui.expansion(p.tr("jog.in_dialog"), icon="open_with").classes("w-full tp-card-2").props("dense") as box:
+        pad = JogPad(p, compact=True).build()
+    pad.container = box
+    pad.update(p.snap)
+    return pad
 
 
 def load_labels(path: Any) -> dict[str, dict[str, str]]:

@@ -159,6 +159,7 @@ body.body--dark .tp-seg .q-btn.bg-primary { background: #636366 !important; }
                                     background: var(--card) !important; }
 .tp-card-2 .q-expansion-item__content { padding-top: 4px; }
 .tp-card-2 .q-field--filled .q-field__control { background: var(--card); }
+.tp-cal-grid:has(> .hidden) { grid-template-columns: 1fr !important; }  /* no jog pad: full width */
 .q-btn.tp-free { background: var(--card) !important; color: var(--blue) !important; box-shadow: var(--shadow);
                  border-radius: var(--radius); }
 .q-btn.tp-free.held { background: var(--blue) !important; color: #fff !important; }

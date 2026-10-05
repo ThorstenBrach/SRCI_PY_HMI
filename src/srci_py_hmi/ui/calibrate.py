@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from nicegui import ui
 from srci.types import FrameCalculationMode, ToolCalculationMode
 
+from srci_py_hmi import geometry
 from srci_py_hmi.model import CARTESIAN
 from srci_py_hmi.robot import CoordData, ToolResult
 from srci_py_hmi.ui import coords
@@ -26,23 +27,24 @@ class Method:
     mode: Any  # ToolCalculationMode / FrameCalculationMode
     positions: tuple[str, ...]  # text keys of the positions to take over ("cal.pos.<name>")
     sketch: str  # "tip", "orient", "frame"
+    local: bool = False  # also calculated by the HMI (RC without CalculateTool / CalculateFrame)
 
 
 TOOL_METHODS = (
-    Method("tool4", ToolCalculationMode.FOUR_POINT_METHOD, ("tip1", "tip2", "tip3", "tip4"), "tip"),
-    Method("tool3", ToolCalculationMode.THREE_POINT_METHOD, ("tip1", "tip2", "tip3"), "tip"),
+    Method("tool4", ToolCalculationMode.FOUR_POINT_METHOD, ("tip1", "tip2", "tip3", "tip4"), "tip", True),
+    Method("tool3", ToolCalculationMode.THREE_POINT_METHOD, ("tip1", "tip2", "tip3"), "tip", True),
     Method("tool5", ToolCalculationMode.FIVE_POINT_METHOD, ("tip1", "tip2", "tip3", "xdir", "zdir"), "tip"),
     Method("tool6", ToolCalculationMode.SIX_POINT_METHOD, ("tip1", "tip2", "tip3", "tip4", "xdir", "zdir"), "tip"),
     Method("tool2z", ToolCalculationMode.TWO_POINT_Z_METHOD, ("tip1", "tip2"), "tip"),
-    Method("abc_world", ToolCalculationMode.ABC_WORLD_METHOD, ("aligned",), "orient"),
+    Method("abc_world", ToolCalculationMode.ABC_WORLD_METHOD, ("aligned",), "orient", True),
     Method("abc2", ToolCalculationMode.ABC_TWO_POINT_METHOD, ("origin", "xaxis", "xyplane"), "orient"),
 )
 # CalculateFrame: the positions go to these inputs
 FRAME_INPUTS = {"origin": "Origin", "xaxis": "Position_X", "xyplane": "Position_XY", "shift": "OriginShift"}
 FRAME_METHODS = (
-    Method("frame3", FrameCalculationMode.THREE_POINT_METHOD, ("origin", "xaxis", "xyplane"), "frame"),
-    Method("frame4", FrameCalculationMode.FOUR_POINT_METHOD, ("origin", "xaxis", "xyplane", "shift"), "frame"),
-    Method("frame1", FrameCalculationMode.ONE_POINT_METHOD, ("origin",), "frame"),
+    Method("frame3", FrameCalculationMode.THREE_POINT_METHOD, ("origin", "xaxis", "xyplane"), "frame", True),
+    Method("frame4", FrameCalculationMode.FOUR_POINT_METHOD, ("origin", "xaxis", "xyplane", "shift"), "frame", True),
+    Method("frame1", FrameCalculationMode.ONE_POINT_METHOD, ("origin",), "frame", True),
 )
 
 # small sketches in the colors of the theme (currentColor / --blue)
@@ -78,10 +80,29 @@ SKETCHES = {
 }
 
 
+def calculate_local(p: Pendant, m: Method, tool: bool, no: int, taken: dict[str, list[float]]) -> Any:
+    """The result of method ``m`` calculated by the HMI (the RC has no CalculateTool / CalculateFrame)."""
+    if tool:
+        old = next((t for t in p.ws.tools if t.no == no), CoordData(no, [0.0] * 6))
+        if m.key == "abc_world":  # orientation only: the TCP stays
+            return ToolResult([*old.values[:3], *geometry.orientation_abc_world(taken["aligned"])], 0.0, 0.0)
+        tcp = geometry.tcp_from_tip([taken[n] for n in m.positions])
+        # the RC returns the orientation 0, 0, 0 for these methods - the HMI keeps the one of the tool
+        return ToolResult([*tcp.tcp, *old.values[3:]], tcp.max_error, tcp.mean_error)
+    pos = [taken[n] for n in m.positions]
+    if m.key == "frame3":
+        return geometry.frame_three_points(*pos)
+    if m.key == "frame4":
+        return geometry.frame_four_points(*pos)
+    return geometry.frame_one_point(pos[0])
+
+
 async def calibrate(p: Pendant, kind: str, no: int) -> None:
     """Wizard for tool / frame ``no`` (``kind``: coords.TOOL or coords.FRAME)."""
     tool = kind == coords.TOOL
-    methods = TOOL_METHODS if tool else FRAME_METHODS
+    function = "CalculateTool" if tool else "CalculateFrame"
+    on_rc = p.snap.can(function)  # else the HMI calculates (geometry.py) - only the unambiguous methods
+    methods = tuple(m for m in (TOOL_METHODS if tool else FRAME_METHODS) if on_rc or m.local)
     state: dict[str, Any] = {"method": methods[0].key, "reference": 0, "result": None}
     taken: dict[str, list[float]] = {}
     manual = [100.0, 0.0, 0.0, 0.0]  # 2-point + Z: tool length Z and orientation Rx, Ry, Rz
@@ -101,7 +122,13 @@ async def calibrate(p: Pendant, kind: str, no: int) -> None:
 
     async def calculate() -> None:
         m = method()
-        if tool:
+        if not on_rc:
+            try:
+                result: Any = calculate_local(p, m, tool, no, taken)
+            except ValueError as exc:
+                ui.notify(str(exc), type="negative", position="top", multi_line=True)
+                return
+        elif tool:
             positions = [taken[n] for n in m.positions]
             if m.mode == ToolCalculationMode.TWO_POINT_Z_METHOD:
                 positions.append([0.0, 0.0, manual[0], *manual[1:]])
@@ -166,15 +193,14 @@ async def calibrate(p: Pendant, kind: str, no: int) -> None:
         state["result"] = None
         draw.refresh()
 
-    function = "CalculateTool" if tool else "CalculateFrame"
     with p.dialog() as dialog, ui.card().classes(
         "w-full max-w-[1180px] gap-3"
     ):
         ui.label(p.tr("cal.title", name=coords.label(p, kind, no))).classes("text-[22px] font-bold")
-        if not p.snap.can(function):
-            ui.label(p.tr("caps.not_supported", f=function)).classes("tp-banner err w-full")
+        if not on_rc:
+            ui.label(p.tr("cal.local", f=function)).classes("tp-banner w-full")
         # left: the positions of the method, right: jog the robot to them without leaving the dialog
-        with ui.element("div").classes("grid w-full gap-5 items-start lg:grid-cols-[1fr_400px]"):
+        with ui.element("div").classes("tp-cal-grid grid w-full gap-5 items-start lg:grid-cols-[1fr_400px]"):
             with ui.column().classes("w-full gap-3"):
                 with ui.row().classes("w-full gap-3 no-wrap"):
                     ui.select({m.key: p.tr(f"cal.{m.key}") for m in methods}, value=state["method"],
@@ -187,8 +213,10 @@ async def calibrate(p: Pendant, kind: str, no: int) -> None:
                             "filled").classes("w-48")  # fmt: skip
                 ui.label(p.tr("cal.tool_hint" if tool else "cal.frame_hint")).classes("tp-muted -mt-1")
                 draw()
-            with ui.column().classes("w-full gap-1 tp-card-2"):
+            with ui.column().classes("w-full gap-1 tp-card-2") as jog_box:
                 pad = JogPad(p, compact=True).build()
+            pad.container = jog_box  # hidden without GroupJog and FreeDrive
+            pad.update(p.snap)
     try:
         result = await dialog
     finally:
