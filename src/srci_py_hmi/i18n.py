@@ -383,6 +383,7 @@ TEXTS: dict[str, dict[str, str]] = {
     },
     "kind.move": {"de": "Bewegung zu Punkt", "en": "Move to point"},
     "kind.relative": {"de": "Relativ verfahren", "en": "Relative move"},
+    "kind.relative_short": {"de": "Relativ", "en": "Relative"},
     "kind.wait": {"de": "Warten", "en": "Wait"},
     "kind.output": {"de": "Ausgang setzen", "en": "Set output"},
     "kind.wait_input": {"de": "Auf Eingang warten", "en": "Wait for input"},

@@ -16,6 +16,8 @@ Browser / Tablet  --HTTP-->  srci-hmi (Python, NiceGUI)  --TCP-->  SPS-Gateway  
                                      └─ oder: SRCI-SDK-Simulator (lokal, ohne Roboter)
 ```
 
+**Bedienungsanleitung:** [docs/BEDIENUNG.md](docs/BEDIENUNG.md)
+
 ## Funktionen
 
 | Seite | Inhalt |

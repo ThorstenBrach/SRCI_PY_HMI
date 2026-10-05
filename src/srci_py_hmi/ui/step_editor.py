@@ -70,7 +70,7 @@ def step_title(p: Pendant, step: Step) -> str:
     if step.kind is StepKind.RELATIVE:
         names = JOINTS if step.motion is Motion.JOINT else CARTESIAN
         moved = [f"{n} {v:+g}" for n, v in zip(names, step.offset, strict=True) if v]
-        return p.tr("kind.relative") + ("  " + "  ".join(moved) if moved else "")
+        return p.tr("kind.relative_short") + ("  " + "  ".join(moved) if moved else "")
     if step.kind is StepKind.WAIT:
         return p.tr("kind.wait_s", s=f"{step.duration:g}")
     if step.kind is StepKind.OUTPUT:
