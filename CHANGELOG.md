@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
  - Tests: model, robot service and UI (simulated browser) against the SDK simulator
 
 ### Changed
+ - README and operating manual (docs/OPERATING_MANUAL.md) in English, screenshots of the English user interface
  - Renamed from SRCI Teach to SRCI_PY_HMI: distribution `srci-py-hmi`, package `srci_py_hmi`,
    command `srci-hmi`. The key file of the stored settings is taken over
    (`~/.srci_teach_secret` -> `~/.srci_py_hmi_secret`)
