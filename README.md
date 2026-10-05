@@ -153,6 +153,12 @@ Getestet mit einem JAKA MiniCobo (Controller 1.7.1, SRCI 1.1, nur Profil Core), 
   JAKA die Antriebe ab und sendet rund 200 ms kein LifeSign. „Roboter einschalten“ quittiert den
   Fehler vorher mit GroupReset (sonst `16#8C04`).
 
+## Weiterentwicklung
+
+Geplant ist, die Komfortfunktionen aus der HMI in einen Robot-Integrator für TwinCAT, CODESYS und
+Python zu verlagern; die HMI wird dann zur reinen Oberfläche über OPC UA:
+[docs/PLAN_ROBOT_INTEGRATOR.md](docs/PLAN_ROBOT_INTEGRATOR.md).
+
 ## Änderungen
 
 [CHANGELOG.md](CHANGELOG.md)
