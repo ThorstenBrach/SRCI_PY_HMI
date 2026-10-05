@@ -16,7 +16,10 @@ Besides motions to points a step can be (:class:`StepKind`)
 * ``WAIT``: wait a time,
 * ``OUTPUT``: set a digital output of the RC (WriteDigitalOutputs),
 * ``WAIT_INPUT``: wait until a digital input of the RC has a value (ReadDigitalInputs),
-* ``SUBPROGRAM``: call a subprogram of the RC by its job ID (CallSubprogram).
+* ``SUBPROGRAM``: call a subprogram of the RC by its job ID (CallSubprogram),
+* ``HALT``: stop point - the program waits until the operator continues.
+
+A step can be switched off (``enabled``): the program skips it.
 
 Every motion step has its own dynamics (velocity, acceleration, deceleration, jerk in % of the
 reference dynamics of the RC, -1 = default of the RC) and blending (BlendingMode of the spec,
@@ -65,6 +68,7 @@ class StepKind(StrEnum):
     OUTPUT = "output"  # digital output ``signal`` := ``value``
     WAIT_INPUT = "wait_input"  # wait until digital input ``signal`` = ``value`` (``timeout`` s, 0: endless)
     SUBPROGRAM = "subprogram"  # CallSubprogram ``job`` with the bytes ``data``
+    HALT = "halt"  # stop point: wait for "continue" of the operator
 
 
 MOTION_KINDS = (StepKind.MOVE, StepKind.RELATIVE)
@@ -104,6 +108,8 @@ class Step:
     timeout: float = 0.0  # WAIT_INPUT [s], 0 = wait endlessly
     job: int = 0  # SUBPROGRAM: JobID
     data: list[int] = field(default_factory=list)  # SUBPROGRAM: parameter bytes
+    enabled: bool = True  # False: the program skips the step
+    note: str = ""  # comment of the operator
 
     def __post_init__(self) -> None:
         self.motion = Motion(self.motion)
@@ -128,6 +134,7 @@ class Step:
         self.signal, self.job, self.value = int(self.signal), int(self.job), bool(self.value)
         self.tool, self.frame = int(self.tool), int(self.frame)
         self.data = [int(b) for b in self.data]
+        self.enabled, self.note = bool(self.enabled), str(self.note)
         self.velocity = _rate(self.velocity, "velocity")
         for name in ("acceleration", "deceleration", "jerk"):
             setattr(self, name, _rate(getattr(self, name), name))
@@ -236,6 +243,19 @@ class Program:
         self.steps.insert(len(self.steps) if index is None else index, step)
         return step
 
+    def next_enabled(self, index: int) -> int:
+        """Index of the first step from ``index`` that is not switched off (``len(steps)``: none)."""
+        while index < len(self.steps) and not self.steps[index].enabled:
+            index += 1
+        return index
+
+    def previous_motion(self, index: int) -> int:
+        """Index of the last switched on motion step before ``index`` (0 if there is none)."""
+        for i in range(min(index, len(self.steps)) - 1, -1, -1):
+            if self.steps[i].enabled and self.steps[i].is_motion:
+                return i
+        return 0
+
     def move_step(self, index: int, offset: int) -> int:
         """Move a step up (-1) or down (+1); returns the new index."""
         new = min(max(index + offset, 0), len(self.steps) - 1)
@@ -263,7 +283,7 @@ class Program:
             program.points[-1].note = str(p.get("note", ""))
         extra = ("blending_mode", "blending_post", "acceleration", "deceleration", "jerk", "kind", "via",
                  "offset", "reference", "tool", "frame", "duration", "signal", "value", "timeout", "job",
-                 "data")  # fmt: skip
+                 "data", "enabled", "note")  # fmt: skip
         for s in data.get("steps", []):
             program.add_step(str(s.get("point", "")), Motion(s.get("motion", Motion.JOINT)),
                              float(s.get("velocity", 20.0)), float(s.get("blending", 0.0)),
@@ -297,6 +317,7 @@ _KIND_FIELDS: dict[StepKind, tuple[str, ...]] = {
     StepKind.OUTPUT: ("signal", "value"),
     StepKind.WAIT_INPUT: ("signal", "value", "timeout"),
     StepKind.SUBPROGRAM: ("job", "data"),
+    StepKind.HALT: (),
 }
 
 
@@ -307,7 +328,12 @@ def _step_dict(step: Step) -> dict[str, Any]:
     fields = _KIND_FIELDS[step.kind]
     if step.kind is StepKind.MOVE and step.motion is not Motion.CIRC:
         fields = fields[:-1]
-    return ({} if step.kind is StepKind.MOVE else {"kind": d["kind"]}) | {k: d[k] for k in fields}
+    out = ({} if step.kind is StepKind.MOVE else {"kind": d["kind"]}) | {k: d[k] for k in fields}
+    if not step.enabled:
+        out["enabled"] = False
+    if step.note:
+        out["note"] = step.note
+    return out
 
 
 def _check_len(values: list[float], n: int, what: str) -> None:

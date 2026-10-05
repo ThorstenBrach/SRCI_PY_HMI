@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Added
+ - Functions of the SIMATIC Robot Library / Robot Integrator in the own design:
+   - pause / continue (GroupInterrupt, GroupContinue) next to STOP, "return to path"
+     (ReturnToPrimary) after jogging away; jog and hand guiding also while a program is paused
+   - external operation mode Automatic / T1 / T2 (SetOperationMode), status tiles, home position
+     (save, move to), diagnostics (on the path, secondary sequence, operating hours, error IDs)
+   - hand guiding (FreeDrive, hold-to-run) and "move to a target position" on the jog page
+   - program steps CIRC (MoveCircularAbsolute with via point), relative motions
+     (MoveLinear/Direct/AxesRelative), wait, set output, wait for input, subprogram
+     (CallSubprogram), stop point; skip and comment steps; sequence settings for all steps;
+     single step backwards; status line with progress; program format 3 (1 and 2 are read)
+   - edit points numerically with the kinematics of the RC, shift / mirror / rotate points
+     (ShiftPosition)
+   - measure tools (CalculateTool, 7 methods) and frames (CalculateFrame, 3 methods) with a wizard
+   - loads (Read/WriteLoadData) on the tools page
+   - page I/O: digital inputs / outputs live, outputs switched by a tap, signal labels, integer
+     and real registers
+   - page System: default and reference dynamics, software limits with the joint position, DH
+     parameters, system variables (standardized parameter list of the specification or
+     manufacturer parameters), kinematics calculator
+   - messages with the time they were first seen, acknowledge on the messages page
  - Teach pendant for SRCI robots as web UI (NiceGUI) on top of SRCI_PY (`srci-client`):
    pages Connection, Jog, Program, Tools, Frames, Messages; German / English; light / dark theme
  - Connection to the robot behind the PLC gateway or to the SDK simulator; robot data,

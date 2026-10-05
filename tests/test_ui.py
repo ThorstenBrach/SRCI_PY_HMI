@@ -58,7 +58,7 @@ async def run_user(user: User, ws: Workspace) -> None:
     await user.should_see(marker="add-step-P1")  # the list is redrawn by the UI timer
     user.find(marker="add-step-P1").click()
     await wait_for(lambda: len(ws.program.steps) == 1)
-    await user.should_see("Joint")
+    await user.should_see(marker="step-0")  # the list is redrawn by the UI timer
     # step editor: LIN, blended (corner distance 10 mm), velocity 50 %
     user.find(marker="step-0").click()
     await user.should_see(marker="step-apply")
@@ -76,7 +76,7 @@ async def run_user(user: User, ws: Workspace) -> None:
     user.find(marker="edit-tool-1").click()
     await user.should_see(marker="coord-write")
     numbers = [n for n in user.find(kind=ui.number).elements if n.props.get("label") == "Z"]
-    numbers[-1].set_value(150.0)
+    max(numbers, key=lambda n: n.id).set_value(150.0)  # the one in the dialog (created last)
     user.find(marker="coord-write").click()
     await wait_for(lambda: len(ws.tools) > 1 and ws.tools[1].values[2] == 150.0)
 

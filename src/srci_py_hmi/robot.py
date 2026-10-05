@@ -219,6 +219,8 @@ class Snapshot:
     secondary: bool = False  # secondary sequence active (jogged away from the interrupted path)
     in_primary_pos: bool = True  # robot is on the interrupted path again
     highest_load: int = 0
+    halted: bool = False  # program waits at a stop point (HALT) for "continue"
+    progress: float = -1.0  # progress of the running motion [%] (-1: unknown)
     working_hours: tuple[int, int] = (0, 0)  # RC, robot arm [h]
 
     def can(self, function: str) -> bool:
@@ -289,6 +291,9 @@ class RobotService:
         self._hold = False  # a motion runs that needs the heartbeat (hold-to-run)
         self._stop_event = threading.Event()  # set by stop(): a running program ends
         self._program_step = -1
+        self._halted = False
+        self._continue = threading.Event()  # continue at a stop point
+        self._current: Any = None  # function block of the running program step (progress)
         self._watchdog: threading.Thread | None = None
         self._closing = threading.Event()
         self.override = 20.0
@@ -326,7 +331,7 @@ class RobotService:
 
     def snapshot(self) -> Snapshot:
         s = Snapshot(phase=self._phase, activity=self._activity, error=self._error,
-                     program_step=self._program_step, simulator=self._target.simulator,
+                     program_step=self._program_step, simulator=self._target.simulator, halted=self._halted,
                      tool=self.tool, frame=self.frame)  # fmt: skip
         t = self._target
         s.target = "SDK simulator" if t.simulator else f"{t.host}:{t.port}"
@@ -355,6 +360,9 @@ class RobotService:
         s.joints, s.cartesian, s.position_valid = joints, cartesian, valid
         s.highest_tool, s.highest_frame = _highest(client, "Tool"), _highest(client, "Frame")
         s.supported = self.supported()
+        current = self._current
+        if current is not None and self._activity is Activity.RUNNING:
+            s.progress = float(getattr(current.OutCmd, "Progress", -1.0))
         s.interrupted = status.RaSequenceState == RaSequenceState.INTERRUPTED or bool(status.PrimarySequencePaused)
         s.secondary = bool(status.SecondarySequenceActive)
         s.in_primary_pos = bool(status.InPrimaryPos)
@@ -840,9 +848,12 @@ class RobotService:
         steps = program.steps
         if not 0 <= start < len(steps):
             raise ValueError(f"step {start} does not exist")
+        start = program.next_enabled(start)
+        if start >= len(steps):
+            raise ValueError("no switched on step from here")
         end = start + 1 if single_step else len(steps)
         # all functions the steps to run need - before the first motion starts
-        self.require(*sorted({f for s in steps[start:end] if (f := step_function(s))}))
+        self.require(*sorted({f for s in steps[start:end] if s.enabled and (f := step_function(s))}))
         self._stop_event.clear()
         with self._command(f"Program {program.name}", Activity.RUNNING) as client:
             self._require_enabled()
@@ -854,6 +865,9 @@ class RobotService:
                     # keep up to two motions on the RC: the next one is known while one moves
                     while index < end and len(pending) < 2 and not self._stop_event.is_set():
                         step = steps[index]
+                        if not step.enabled:
+                            index += 1
+                            continue
                         if not step.is_motion:
                             if pending:
                                 break  # I/O, wait, subprogram: after the motions before it
@@ -872,7 +886,7 @@ class RobotService:
                     if not pending:
                         continue
                     i, fb = pending[0]
-                    self._program_step = i
+                    self._program_step, self._current = i, fb
                     if on_step is not None:
                         on_step(i)
                     self._wait_motion(client, fb, 300.0)
@@ -884,7 +898,8 @@ class RobotService:
                 raise
             finally:
                 self._hold = False
-            return index
+                self._current = None
+            return program.next_enabled(index) if index < len(steps) else index
 
     def _start_hold(self, hold: bool) -> None:
         self._jog_alive = time.monotonic()
@@ -951,7 +966,19 @@ class RobotService:
         elif step.kind is StepKind.SUBPROGRAM:
             fb = _subprogram_block(step.job, step.data)
             client.start(fb)
+            self._current = fb
             self._wait_motion(client, fb, 3600.0)
+        elif step.kind is StepKind.HALT:
+            self._continue.clear()
+            self._halted = True
+            self._hold = False  # the operator may let go of the start key at a stop point
+            try:
+                while not self._continue.wait(0.1):
+                    if self._stop_event.is_set():
+                        raise SrciError("stopped")
+            finally:
+                self._halted = False
+                self._jog_alive = time.monotonic()
 
     # ------------------------------------------------------------------ pause, mode, hand guiding
 
@@ -962,7 +989,10 @@ class RobotService:
         self._direct("GroupInterrupt", MC_GroupInterruptFB())
 
     def resume(self) -> None:
-        """Continue interrupted motions (GroupContinue)."""
+        """Continue interrupted motions (GroupContinue) or a program waiting at a stop point."""
+        if self._halted and not self.program_paused():
+            self._continue.set()
+            return
         self.require("GroupContinue")
         self._direct("GroupContinue", MC_GroupContinueFB())
 
@@ -1107,12 +1137,13 @@ class RobotService:
     # ------------------------------------------------------------------ loads, dynamics, limits
 
     def read_loads(self) -> list[LoadInfo]:
-        """All loads of the RC (index 0 .. HighestLoadIndex, ReadLoadData)."""
+        """All loads of the RC (index 1 .. HighestLoadIndex, ReadLoadData; 0 is "no load" and cannot
+        be read)."""
         self.require("ReadLoadData")
         with self._command("ReadLoadData") as client:
             highest = _highest(client, "Load")
             loads = []
-            for no in range(highest + 1):
+            for no in range(1, highest + 1):
                 fb = MC_ReadLoadDataFB()
                 fb.ParCmd.LoadNo = no
                 d = client.execute(fb, timeout=5.0).OutCmd.LoadData
@@ -1324,7 +1355,7 @@ def step_function(step: Step) -> str | None:
         return MOTION_FUNCTIONS[step.motion.value]
     if step.kind is StepKind.RELATIVE:
         return RELATIVE_FUNCTIONS[step.motion.value]
-    return STEP_FUNCTIONS.get(step.kind)
+    return STEP_FUNCTIONS.get(step.kind)  # WAIT, HALT: no function of the RC
 
 
 def _motion_block(step: Step, program: Program) -> Any:

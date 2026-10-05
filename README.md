@@ -7,6 +7,8 @@ verfährt ihn per Tippbetrieb, teacht Punkte und fährt daraus Programme ab.
 <p>
   <img src="docs/images/jog.png" alt="Bewegen" width="49%">
   <img src="docs/images/step_editor.png" alt="Schritt bearbeiten" width="49%">
+  <img src="docs/images/io.png" alt="Ein-/Ausgänge" width="49%">
+  <img src="docs/images/calibrate.png" alt="Werkzeug vermessen" width="49%">
 </p>
 
 ```
@@ -18,15 +20,17 @@ Browser / Tablet  --HTTP-->  srci-hmi (Python, NiceGUI)  --TCP-->  SPS-Gateway  
 
 | Seite | Inhalt |
 |---|---|
-| **Verbindung** | Roboter (IP/Port/Telegrammlänge des Gateways) oder SDK-Simulator, LifeSign-Timeout (100/250/500/1000 ms oder frei, wird gemerkt), Roboter ein/aus (quittiert vorher anstehende Fehler mit GroupReset), Quittieren, Geschwindigkeits-Override, Roboterdaten und **Fähigkeiten**: welche Funktionen die Steuerung in `RCSupportedFunctions` meldet. Nicht gemeldete Funktionen werden in der Oberfläche gesperrt und nie gesendet |
-| **Bewegen** | Tippen in Achsen, Basis oder Werkzeug, stufenlos oder in Schritten (0,1 / 1 / 10), Tippgeschwindigkeit. Auswahl von Werkzeug und Koordinatensystem; diese gelten für die TCP-Anzeige, das kartesische Tippen und das Teachen (der Punkt merkt sich Tool und Frame). Live-Position, „Punkt teachen“ |
-| **Programm** | Punkte (anfahren, neu teachen, umbenennen, löschen) und Ablauf. Einen Schritt antippen öffnet den Editor: Bewegungsart **LIN** (MoveLinearAbsolute), **PTP** (MoveDirectAbsolute, kartesisches Ziel achsinterpoliert) oder **Joint** (MoveAxesAbsolute, Achswinkel), jeweils mit Genauhalt oder Überschleifen (Art laut Spez, Wert vor dem Punkt und – bei „zwei Radien“ – nach dem Punkt; Arten, die der Roboter in dieser Verbindung abgelehnt hat, sind markiert), dazu Geschwindigkeit, Beschleunigung, Verzögerung und Ruck in % oder „Standard“ der RC. Start, Einzelschritt, Sichern und Öffnen als JSON |
-| **Werkzeuge** | Tool-Tabelle der Robotersteuerung lesen (ReadToolData) und einzelne Tools schreiben (WriteToolData): X, Y, Z, Rx, Ry, Rz, Last-Nr., externer TCP. Lokale Bezeichnungen wie „Greifer“ stehen in `programs/labels.json`. T0 (Flansch) ist fest |
-| **Koordinatensysteme** | Frames lesen und schreiben (Read/WriteFrameData), mit Bezugssystem. „Aktuelle TCP-Position übernehmen“ setzt den Ursprung eines Frames auf den TCP. F0 (Basis) ist fest |
-| **Meldungen** | Meldungen der Robotersteuerung und der letzte Fehler |
+| **Verbindung** | Roboter (IP/Port/Telegrammlänge des Gateways) oder SDK-Simulator, LifeSign-Timeout (100/250/500/1000 ms oder frei, wird gemerkt), Roboter ein/aus (quittiert vorher anstehende Fehler mit GroupReset), Quittieren, Geschwindigkeits-Override, Roboterdaten und **Fähigkeiten**: welche Funktionen die Steuerung in `RCSupportedFunctions` meldet. Nicht gemeldete Funktionen werden in der Oberfläche gesperrt und nie gesendet. Status-Kacheln (Antriebe, Fehler, Kommunikation, Sequenz), **Betriebsart** Automatik / T1 / T2 extern (SetOperationMode), **Grundstellung** sichern und anfahren, **Diagnose** (auf der Bahn, Sekundärsequenz, Betriebsstunden, letzte Fehler-IDs) |
+| **Bewegen** | Tippen in Achsen, Basis oder Werkzeug, stufenlos oder in Schritten (0,1 / 1 / 10), Tippgeschwindigkeit. Auswahl von Werkzeug und Koordinatensystem; diese gelten für die TCP-Anzeige, das kartesische Tippen und das Teachen (der Punkt merkt sich Tool und Frame). Live-Position, „Punkt teachen“, **Handführen** (FreeDrive, gedrückt halten), **Zielposition anfahren**: Achswerte oder kartesische Werte eingeben (Joint / PTP / LIN) |
+| **Programm** | Punkte (anfahren, neu teachen, umbenennen, löschen) und Ablauf. Einen Schritt antippen öffnet den Editor: Bewegungsart **LIN** (MoveLinearAbsolute), **PTP** (MoveDirectAbsolute, kartesisches Ziel achsinterpoliert) oder **Joint** (MoveAxesAbsolute, Achswinkel), jeweils mit Genauhalt oder Überschleifen (Art laut Spez, Wert vor dem Punkt und – bei „zwei Radien“ – nach dem Punkt; Arten, die der Roboter in dieser Verbindung abgelehnt hat, sind markiert), dazu Geschwindigkeit, Beschleunigung, Verzögerung und Ruck in % oder „Standard“ der RC. Weitere Schrittarten: **CIRC** über einen Hilfspunkt (MoveCircularAbsolute), **relativ** verfahren (MoveLinear/Direct/AxesRelative, im Werkzeug oder Koordinatensystem), **Warten**, **Ausgang setzen** (WriteDigitalOutputs), **auf Eingang warten** (ReadDigitalInputs, mit Timeout), **Unterprogramm** (CallSubprogram) und **Haltepunkt**. Schritte lassen sich überspringen und kommentieren; **Ablauf-Einstellungen** setzen Überschleifen und Dynamik für alle Schritte. Punkte numerisch bearbeiten (mit Vorwärts-/Rückwärtskinematik der RC) und **verschieben, spiegeln, drehen** (ShiftPosition). Start, Einzelschritt, **Schritt zurück**, Statuszeile mit Fortschritt, **Pause / Fortsetzen** und **Zurück zur Bahn** (GroupInterrupt, GroupContinue, ReturnToPrimary), Sichern und Öffnen als JSON |
+| **Werkzeuge** | Tool-Tabelle der Robotersteuerung lesen (ReadToolData) und einzelne Tools schreiben (WriteToolData): X, Y, Z, Rx, Ry, Rz, Last-Nr., externer TCP. Lokale Bezeichnungen wie „Greifer“ stehen in `programs/labels.json`. T0 (Flansch) ist fest. **Vermessen** mit der RC (CalculateTool: 3-, 4-, 5-, 6-Punkt, 2-Punkt + Z, ABC Welt, ABC 2-Punkt). **Lasten** lesen und schreiben (Read/WriteLoadData: Masse, Schwerpunkt, Trägheit) |
+| **Koordinatensysteme** | Frames lesen und schreiben (Read/WriteFrameData), mit Bezugssystem. „Aktuelle TCP-Position übernehmen“ setzt den Ursprung eines Frames auf den TCP. F0 (Basis) ist fest. **Vermessen** mit der RC (CalculateFrame: 3-Punkt, 4-Punkt mit Ursprungsverschiebung, 1-Punkt) |
+| **Ein-/Ausgänge** | Digitale Ein- und Ausgänge als Signal-Raster, live gelesen (Read/WriteDigitalInputs/Outputs); Ausgänge antippen schaltet. Lokale Bezeichnungen je Signal. Integer- und Real-Register lesen und schreiben (Read/WriteIntegers, Read/WriteReals) |
+| **System** | Standard- und Referenzdynamik (Read/WriteRobotDefault/ReferenceDynamics), Software-Endschalter mit Balken und aktueller Achsposition (Read/WriteRobotSWLimits, Werkseinstellung), DH-Parameter, **Systemvariablen** mit der Standard-Parameterliste der Spezifikation oder Herstellerparametern (Read/WriteSystemVariable), Kinematik-Rechner (CalculateForward/InverseKinematic) |
+| **Meldungen** | Meldungen der Robotersteuerung mit Zeitpunkt (erstmals gesehen), Quittieren und der letzte Fehler |
 
-Immer sichtbar: der Status („Bereit · Ein“, „Fährt“, „Störung“ …) und die rote **STOPP**-Taste
-(GroupStop). Texte auf Deutsch und Englisch, helles und dunkles Design.
+Immer sichtbar: der Status („Bereit · Ein“, „Fährt“, „Unterbrochen“, „Störung“ …), während einer
+Bewegung die Taste **Pause / Fortsetzen** und die rote **STOPP**-Taste (GroupStop). Texte auf Deutsch und Englisch, helles und dunkles Design.
 
 ## Sicherheit
 
@@ -68,17 +72,29 @@ srci-hmi --native                            :: eigenes Fenster statt Browser (p
 (`programs/`) und Einstellungen des Browsers (`.nicegui/`) landen im aktuellen Ordner.
 
 Die Programme liegen als JSON im Ordner `programs` (Option `--programs`). Sie sind lesbar
-und lassen sich versionieren. Format 1 (ältere Version) wird weiterhin gelesen:
+und lassen sich versionieren. Format 1 und 2 (ältere Versionen) werden weiterhin gelesen. Die
+Grundstellung steht in `programs/settings.json`, lokale Bezeichnungen (Werkzeuge, Frames, Lasten,
+Signale) in `programs/labels.json`.
 
 ```json
-{ "format": 2, "name": "Palette",
+{ "format": 3, "name": "Palette",
   "points": [ { "name": "P1", "joints": [0, 30, 60, 0, 90, 0], "cartesian": [-316, -6, 208, 180, 0, 0], "tool": 0, "frame": 0, "note": "" } ],
   "steps":  [ { "point": "P1", "motion": "linear", "velocity": 50.0,
                 "blending_mode": "MAX_CORNER_DEVIATION", "blending": 20.0, "blending_post": 0.0,
-                "acceleration": -1.0, "deceleration": -1.0, "jerk": -1.0 } ] }
+                "acceleration": -1.0, "deceleration": -1.0, "jerk": -1.0 },
+              { "kind": "output", "signal": 3, "value": true, "note": "Greifer zu" },
+              { "kind": "wait_input", "signal": 5, "value": true, "timeout": 2.0 },
+              { "kind": "wait", "duration": 0.5, "enabled": false } ] }
 ```
 
-`motion`: `linear`, `ptp` oder `joint`; Dynamik in %, `-1` = Standard der Robotersteuerung.
+`motion`: `linear`, `ptp`, `joint` oder `circ` (mit `via`); Dynamik in %, `-1` = Standard der
+Robotersteuerung. `kind` (fehlt bei Bewegungen zu Punkten): `relative` (`offset`, `reference`,
+`tool`, `frame`), `wait` (`duration` s), `output` / `wait_input` (`signal` = Byte · 8 + Bit,
+`value`, `timeout`), `subprogram` (`job`, `data`), `halt`.
+
+„Warten“ wartet in der HMI (nicht mit WaitTime): das geht mit jeder Robotersteuerung, und STOPP
+beendet es sofort. Ausgänge, Eingänge, Warten und Unterprogramme laufen, wenn die Bewegungen davor
+fertig sind (Genauhalt davor).
 
 ## Bedienung in drei Schritten
 
@@ -90,6 +106,11 @@ und lassen sich versionieren. Format 1 (ältere Version) wird weiterhin gelesen:
    (gedrückt halten) fährt man das Programm ab, mit der Nummer eines Schritts wählt man den
    Startschritt.
 
+Mit „+ Schritt“ kommen weitere Schrittarten dazu (Kreis, relativ, Ausgang, Eingang, Warten,
+Unterprogramm, Haltepunkt). Läuft ein Programm, hält **Pause** den Roboter an; danach kann man ihn
+freifahren (Tippen, Handführen), mit **Zurück zur Bahn** auf die unterbrochene Bahn zurückfahren
+und mit **Fortsetzen** weitermachen.
+
 ## Aufbau
 
 | Datei | Inhalt |
@@ -98,8 +119,13 @@ und lassen sich versionieren. Format 1 (ältere Version) wird weiterhin gelesen:
 | `src/srci_py_hmi/robot.py` | `RobotService`: Verbindung, Befehle nacheinander, STOPP sofort, Tippen mit Watchdog, Programmablauf (zwei Bewegungen im Voraus für Überschleifen), Werkzeuge/Koordinatensysteme, Prüfung gegen `RCSupportedFunctions` |
 | `src/srci_py_hmi/app.py` | Start, Kommandozeile |
 | `src/srci_py_hmi/ui/pendant.py` | NiceGUI-Seite (eine Instanz pro Browser-Tab, ein Roboter für alle Tabs) |
-| `src/srci_py_hmi/ui/step_editor.py` | Dialog „Schritt bearbeiten“ |
-| `src/srci_py_hmi/ui/coords.py` | Seiten „Werkzeuge“ und „Koordinatensysteme“ |
+| `src/srci_py_hmi/ui/step_editor.py` | Dialog „Schritt bearbeiten“ (alle Schrittarten), Ablauf-Einstellungen |
+| `src/srci_py_hmi/ui/coords.py` | Seiten „Werkzeuge“ (mit Lasten) und „Koordinatensysteme“ |
+| `src/srci_py_hmi/ui/calibrate.py` | Assistenten „Werkzeug / Koordinatensystem vermessen“ |
+| `src/srci_py_hmi/ui/points.py` | Punkt bearbeiten, verschieben / spiegeln / drehen |
+| `src/srci_py_hmi/ui/io_page.py` | Seite „Ein-/Ausgänge“ |
+| `src/srci_py_hmi/ui/system_page.py` | Seite „System“ |
+| `src/srci_py_hmi/sysvars.py` | Standard-Parameterliste der Systemvariablen, Umrechnung der 4-Byte-Werte |
 | `src/srci_py_hmi/ui/theme.py` | Farben, CSS, JavaScript für „Halten zum Fahren“ |
 | `src/srci_py_hmi/i18n.py` | Texte DE/EN |
 
