@@ -158,6 +158,7 @@ body.body--dark .tp-seg .q-btn.bg-primary { background: #636366 !important; }
 .tp-pad-compact .q-btn.tp-key-btn { width: 52px; height: 44px; min-height: 44px; font-size: 20px; border-radius: 12px !important;
                                     background: var(--card) !important; }
 .tp-card-2 .q-expansion-item__content { padding-top: 4px; }
+.tp-card-2 .q-field--filled .q-field__control { background: var(--card); }
 .q-btn.tp-free { background: var(--card) !important; color: var(--blue) !important; box-shadow: var(--shadow);
                  border-radius: var(--radius); }
 .q-btn.tp-free.held { background: var(--blue) !important; color: #fff !important; }

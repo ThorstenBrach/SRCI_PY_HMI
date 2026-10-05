@@ -99,6 +99,10 @@ async def run_user(user: User, ws: Workspace) -> None:
         ws.robot.alive()
         await asyncio.sleep(0.1)
     ws.robot.release()
+    # tool and frame are chosen in the dialog as well (active coordinate system of the robot service)
+    user.find(marker="pad-tool").elements.pop().set_value(1)
+    user.find(marker="pad-frame").elements.pop().set_value(1)
+    await wait_for(lambda: (ws.robot.tool, ws.robot.frame) == (1, 1))
     await wait_for(lambda: ws.robot.snapshot().joints[0] > before + 0.1)
 
 

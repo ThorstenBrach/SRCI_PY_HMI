@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -137,6 +138,7 @@ class Pendant:
         self.seen_blending: tuple[tuple[str, bool], ...] = ()
         self.coord_pages = {kind: coords.CoordPage(self, kind) for kind in (coords.TOOL, coords.FRAME)}
         self.jog_pads: list[JogPad] = []  # jog page and dialogs that are open
+        self.coord_lock = asyncio.Lock()
         self.io_page = IoPage(self)
         self.system_page = SystemPage(self)
         self.target: dict[str, Any] = {"motion": "joint", "velocity": 10.0}
@@ -762,11 +764,13 @@ class Pendant:
             f.props(f'label="{name}" suffix="{unit}"')
 
     async def select_coords(self, tool: int | None = None, frame: int | None = None) -> None:
-        tool = self.robot.tool if tool is None else int(tool)
-        frame = self.robot.frame if frame is None else int(frame)
-        if (tool, frame) != (self.robot.tool, self.robot.frame):
-            await self.act(self.robot.set_coordinate_system, tool, frame)
-            self.ws.coord_revision += 1
+        # one after the other: a frame chosen right after a tool must not undo the tool
+        async with self.coord_lock:
+            tool = self.robot.tool if tool is None else int(tool)
+            frame = self.robot.frame if frame is None else int(frame)
+            if (tool, frame) != (self.robot.tool, self.robot.frame):
+                await self.act(self.robot.set_coordinate_system, tool, frame)
+                self.ws.coord_revision += 1
 
     def set_jog_mode(self, mode: str) -> None:
         self.jog_mode = mode

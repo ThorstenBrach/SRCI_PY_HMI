@@ -15,9 +15,9 @@ from nicegui import ui
 
 from srci_py_hmi.model import CARTESIAN
 from srci_py_hmi.robot import CoordData
-from srci_py_hmi.ui.jog_pad import JogPad
 
 if TYPE_CHECKING:
+    from srci_py_hmi.ui.jog_pad import JogPad
     from srci_py_hmi.ui.pendant import Pendant
 
 TOOL, FRAME = "tool", "frame"
@@ -339,6 +339,8 @@ class CoordPage:
 
 def jog_expansion(p: Pendant) -> JogPad:
     """"Move the robot" inside a dialog (collapsed): the jog keys without leaving the dialog."""
+    from srci_py_hmi.ui.jog_pad import JogPad  # jog_pad uses this module (tool / frame options)
+
     with ui.expansion(p.tr("jog.in_dialog"), icon="open_with").classes("w-full tp-card-2").props("dense"):
         return JogPad(p, compact=True).build()
 

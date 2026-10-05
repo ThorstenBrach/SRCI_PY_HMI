@@ -13,6 +13,7 @@ from nicegui import ui
 
 from srci_py_hmi.model import CARTESIAN, JOINTS
 from srci_py_hmi.robot import Activity, Phase, Snapshot
+from srci_py_hmi.ui import coords
 
 if TYPE_CHECKING:
     from srci_py_hmi.ui.pendant import Pendant
@@ -41,6 +42,9 @@ class JogPad:
         self.increment_toggle: ui.toggle | None = None
         self.banner: ui.label | None = None
         self.free_btn: ui.button | None = None
+        self.tool_select: ui.select | None = None
+        self.frame_select: ui.select | None = None
+        self.seen_coords: tuple[object, ...] = ()
 
     def build(self) -> JogPad:
         p = self.p
@@ -51,6 +55,18 @@ class JogPad:
                     {"axes": p.tr("jog.axes"), "base": p.tr("jog.base"), "tool": p.tr("jog.tool")},
                     value=p.jog_mode, on_change=lambda e: p.set_jog_mode(e.value),
                 ).props("no-caps unelevated dense").classes("tp-seg")  # fmt: skip
+            # active tool and frame: Cartesian jogging, the displayed TCP and the positions taken over
+            with ui.row().classes("w-full gap-2 no-wrap"):
+                self.tool_select = (
+                    ui.select(coords.options(p, coords.TOOL), value=p.robot.tool, label=p.tr("coord.tool"),
+                              on_change=lambda e: p.select_coords(tool=e.value))
+                    .props("filled dense options-dense").classes("flex-1").mark("pad-tool")
+                )  # fmt: skip
+                self.frame_select = (
+                    ui.select(coords.options(p, coords.FRAME), value=p.robot.frame, label=p.tr("coord.frame"),
+                              on_change=lambda e: p.select_coords(frame=e.value))
+                    .props("filled dense options-dense").classes("flex-1").mark("pad-frame")
+                )  # fmt: skip
             self.banner = ui.label("").classes("tp-banner w-full text-[13px] py-2")
         with ui.column().classes("w-full gap-0" + (" tp-pad-compact" if self.compact else "")):
             for i in range(6):
@@ -106,6 +122,12 @@ class JogPad:
 
     def update(self, s: Snapshot) -> None:
         p = self.p
+        if self.tool_select is not None and self.frame_select is not None:
+            coord_key = (p.ws.coord_revision, s.tool, s.frame, s.highest_tool, s.highest_frame)
+            if coord_key != self.seen_coords:  # other choice on the jog page, tables read or written
+                self.seen_coords = coord_key
+                self.tool_select.set_options(coords.options(p, coords.TOOL), value=s.tool)
+                self.frame_select.set_options(coords.options(p, coords.FRAME), value=s.frame)
         ready = s.phase is Phase.READY
         jog_supported = s.can("GroupJog")
         # also while a program is interrupted: jogging away from the path (secondary sequence)
