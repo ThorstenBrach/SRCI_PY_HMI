@@ -311,6 +311,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "diag.hours_ra": {"de": "Betriebsstunden Arm", "en": "Operating hours arm"},
     "diag.errors": {"de": "Letzte Fehler-IDs", "en": "Last error IDs"},
     # jog page: hand guiding, target position
+    "jog.in_dialog": {"de": "Roboter bewegen", "en": "Move the robot"},
     "free.button": {"de": "Handführen", "en": "Hand guiding"},
     "free.hint": {
         "de": "Gedrückt halten: Roboter von Hand führen (FreeDrive)",

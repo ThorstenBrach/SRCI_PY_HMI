@@ -151,6 +151,13 @@ body.body--dark .tp-seg .q-btn.bg-primary { background: #636366 !important; }
 
 .tp-chip.circ { color: var(--orange); }
 .tp-item.skipped { opacity: .45; }
+/* compact jog pad in dialogs */
+.tp-pad-compact .tp-axis { grid-template-columns: 36px 1fr 52px 52px; gap: 8px; min-height: 52px; }
+.tp-pad-compact .tp-axis-name { font-size: 15px; }
+.tp-pad-compact .tp-axis-val { font-size: 17px; }
+.tp-pad-compact .q-btn.tp-key-btn { width: 52px; height: 44px; min-height: 44px; font-size: 20px; border-radius: 12px !important;
+                                    background: var(--card) !important; }
+.tp-card-2 .q-expansion-item__content { padding-top: 4px; }
 .q-btn.tp-free { background: var(--card) !important; color: var(--blue) !important; box-shadow: var(--shadow);
                  border-radius: var(--radius); }
 .q-btn.tp-free.held { background: var(--blue) !important; color: #fff !important; }

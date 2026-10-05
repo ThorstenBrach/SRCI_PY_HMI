@@ -168,7 +168,7 @@ class SystemPage:
             if self.limits is None:
                 return
         fields: list[tuple[ui.number, ui.number]] = []
-        with ui.dialog() as dialog, ui.card().classes("w-full max-w-[520px] gap-3"):
+        with p.dialog() as dialog, ui.card().classes("w-full max-w-[520px] gap-3"):
             ui.label(p.tr("lim.title")).classes("text-[20px] font-semibold")
             ui.label(p.tr("lim.warning")).classes("tp-banner w-full")
             for name, (lo, hi) in zip(JOINTS, self.limits, strict=True):
@@ -303,7 +303,7 @@ class SystemPage:
             await self.read_variable()
         current = {v.sub: v.decode() for v in self.var_values}
         fields: dict[int, ui.input] = {}
-        with ui.dialog() as dialog, ui.card().classes("w-full max-w-[520px] gap-3"):
+        with p.dialog() as dialog, ui.card().classes("w-full max-w-[520px] gap-3"):
             ui.label(f"{par.id} · {par.name(p.lang)}").classes("text-[20px] font-semibold")
             if par.text:
                 text = ui.input(p.tr("common.name"), value=sysvars.text_of(self.var_values)).props("filled")

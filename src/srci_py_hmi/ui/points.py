@@ -41,7 +41,7 @@ async def edit_point(p: Pendant, name: str) -> None:
     """Edit name, Cartesian position, joints, tool and frame of a point."""
     point = p.ws.program.point(name)
     v: dict[str, Any] = {"name": point.name, "tool": point.tool, "frame": point.frame, "note": point.note}
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-[620px] gap-3"):
+    with p.dialog() as dialog, ui.card().classes("w-full max-w-[620px] gap-3"):
         with ui.row().classes("w-full items-center gap-3 no-wrap"):
             ui.icon("place").classes("text-[26px] text-[var(--blue)]")
             ui.input(p.tr("common.name"), value=v["name"]).bind_value(v, "name").props("filled dense").classes(
@@ -74,20 +74,44 @@ async def edit_point(p: Pendant, name: str) -> None:
                 for f, x in zip(joints, values, strict=True):
                     f.set_value(round(x, 3))
 
+        async def take_actual() -> None:
+            # the actual position in the tool / frame chosen above (the robot reads it in its own)
+            position = await p.act(p.robot.current_position)
+            if position is None:
+                return
+            for f, x in zip(joints, position[0], strict=True):
+                f.set_value(round(x, 3))
+            if (int(v["tool"]), int(v["frame"])) == (p.robot.tool, p.robot.frame):
+                values = position[1]
+            else:
+                values = await p.act(p.robot.read_position, int(v["tool"]), int(v["frame"]))
+                if values is None:
+                    return
+            for f, x in zip(cart, values, strict=True):
+                f.set_value(round(x, 3))
+
         with ui.row().classes("w-full gap-2"):
+            ui.button(p.tr("target.take"), icon="my_location", on_click=take_actual).props(
+                "flat no-caps"
+            ).classes("tp-btn-soft").mark("point-take")
             ui.button(p.tr("point.calc_joints"), icon="calculate", on_click=from_cart).props(
                 "flat no-caps"
             ).classes("tp-btn-soft").set_enabled(p.snap.can("CalculateInverseKinematic"))
             ui.button(p.tr("point.calc_cart"), icon="calculate", on_click=from_joints).props(
                 "flat no-caps"
             ).classes("tp-btn-soft").set_enabled(p.snap.can("CalculateForwardKinematic"))
+        pad = coords.jog_expansion(p)
         ui.input(p.tr("step.note"), value=v["note"]).bind_value(v, "note").props("filled dense").classes("w-full")
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button(p.tr("common.cancel"), on_click=lambda: dialog.submit(False)).props("flat no-caps")
             ui.button(p.tr("common.save"), on_click=lambda: dialog.submit(True)).props(
                 "unelevated no-caps color=primary"
             ).mark("point-save")
-    if not await dialog:
+    try:
+        confirmed = await dialog
+    finally:
+        pad.close()
+    if not confirmed:
         return
     try:
         if v["name"] != point.name:
@@ -107,7 +131,7 @@ async def shift_point(p: Pendant, name: str) -> None:
     point = p.ws.program.point(name)
     v: dict[str, Any] = {"mode": "SHIFT_BY_VECTOR", "line": "Z_AXIS", "plane": "XY_PLANE", "angle": 90.0,
                          "new": True}  # fmt: skip
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-[620px] gap-3"):
+    with p.dialog() as dialog, ui.card().classes("w-full max-w-[620px] gap-3"):
         ui.label(p.tr("shift.title", name=name)).classes("text-[22px] font-bold")
         ui.select({k: p.tr(f"shift.{k}") for k in SHIFT_MODES}, value=v["mode"], label=p.tr("shift.mode")).bind_value(
             v, "mode"

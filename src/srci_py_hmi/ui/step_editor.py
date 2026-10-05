@@ -148,7 +148,7 @@ async def edit_step(p: Pendant, index: int | None, step: Step | None = None) -> 
     title = p.tr("step.title", n=index + 1) if index is not None else p.tr("step.new")
     motions = (Motion.LINEAR, Motion.PTP, Motion.JOINT) + ((Motion.CIRC,) if kind is StepKind.MOVE else ())
 
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-[640px] gap-4"):
+    with p.dialog() as dialog, ui.card().classes("w-full max-w-[640px] gap-4"):
         with ui.row().classes("w-full items-center justify-between no-wrap"):
             with ui.row().classes("items-center gap-3 no-wrap"):
                 ui.icon(KIND_ICONS[kind]).classes("text-[26px] text-[var(--blue)]")
@@ -358,7 +358,7 @@ async def path_settings(p: Pendant) -> bool:
         return False
     v: dict[str, Any] = {"blend": "keep", "mode": default_blending(p), "p0": 10.0, "dyn": False}
     dyn = {name: getattr(motions[0], name) for name in DYNAMICS}
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-[600px] gap-4"):
+    with p.dialog() as dialog, ui.card().classes("w-full max-w-[600px] gap-4"):
         ui.label(p.tr("path.title")).classes("text-[22px] font-bold")
         ui.label(p.tr("path.lead", n=len(motions))).classes("tp-muted -mt-3")
         ui.label(p.tr("step.blend")).classes("tp-card-title")

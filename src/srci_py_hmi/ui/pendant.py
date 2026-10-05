@@ -29,6 +29,7 @@ from srci_py_hmi.robot import (
 )
 from srci_py_hmi.ui import coords, points
 from srci_py_hmi.ui.io_page import IoPage
+from srci_py_hmi.ui.jog_pad import JogPad
 from srci_py_hmi.ui.step_editor import (
     KIND_ICONS,
     blend_label,
@@ -43,9 +44,6 @@ from srci_py_hmi.ui.theme import COLORS, CSS, HOLD_JS
 
 log = logging.getLogger("srci_py_hmi.ui")
 
-# value range of the position bars (joints [deg], X/Y/Z [mm], Rx/Ry/Rz [deg])
-JOINT_RANGE = 360.0
-CART_RANGES = (1000.0, 1000.0, 1000.0, 180.0, 180.0, 180.0)
 INCREMENTS = {"0": 0.0, "0.1": 0.1, "1": 1.0, "10": 10.0}
 JOG_MODES = {"axes": JogMode.JOG_AXES, "base": JogMode.JOG_FRAME, "tool": JogMode.JOG_TOOL}
 
@@ -134,14 +132,11 @@ class Pendant:
         self.seen_revision = -1
         self.snap = Snapshot()
         self.nav_buttons: dict[str, ui.button] = {}
-        self.axis_values: list[ui.label] = []
-        self.axis_bars: list[ui.element] = []
-        self.axis_names: list[ui.label] = []
-        self.jog_keys: list[ui.button] = []
         self._sent: dict[tuple[int, str], str] = {}
         self.seen_coords: tuple[object, ...] = ()
         self.seen_blending: tuple[tuple[str, bool], ...] = ()
         self.coord_pages = {kind: coords.CoordPage(self, kind) for kind in (coords.TOOL, coords.FRAME)}
+        self.jog_pads: list[JogPad] = []  # jog page and dialogs that are open
         self.io_page = IoPage(self)
         self.system_page = SystemPage(self)
         self.target: dict[str, Any] = {"motion": "joint", "velocity": 10.0}
@@ -160,6 +155,19 @@ class Pendant:
             element.classes(replace=value)
         else:
             element.props(value)
+
+    def dialog(self) -> ui.dialog:
+        """A new dialog in the page (see :attr:`dialog_host`)."""
+        with self.dialog_host:
+            dialog = ui.dialog()
+
+        def closed(e: Any) -> None:
+            if not e.value:  # removed after the closing animation; its values stay readable
+                with self.dialog_host:
+                    ui.timer(1.0, dialog.delete, once=True)
+
+        dialog.on_value_change(closed)
+        return dialog
 
     def tr(self, key: str, **values: object) -> str:
         return t(key, self.lang, **values)
@@ -358,6 +366,9 @@ class Pendant:
         ui.on("hold_release", self.hold_release)
 
         self.build_header(dark)
+        # dialogs live here, not in the list they were opened from: a list that is redrawn (refreshable)
+        # would delete an open dialog with it (e.g. the tool list after writing, while measuring)
+        self.dialog_host = ui.element("div").classes("hidden")
         with (
             ui.left_drawer(value=True, bordered=False)
             .classes("tp-drawer")
@@ -641,6 +652,7 @@ class Pendant:
                     on_change=lambda e: self.set_jog_mode(e.value),
                 )
                 mode.props("no-caps unelevated").classes("tp-seg")
+                self.jog_mode_toggle = mode
             self.jog_banner = ui.row().classes("tp-banner w-full items-center justify-between")
             with self.jog_banner:
                 self.jog_banner_text = ui.label(self.tr("jog.need_enable"))
@@ -651,24 +663,11 @@ class Pendant:
                 )
             with ui.element("div").classes("grid w-full gap-5 items-start lg:grid-cols-[1.5fr_1fr]"):
                 with self.card():
-                    for i in range(6):
-                        with ui.element("div").classes("tp-axis"):
-                            self.axis_names.append(ui.label("").classes("tp-axis-name"))
-                            with ui.column().classes("gap-1"):
-                                self.axis_values.append(
-                                    ui.label("–").classes("tp-axis-val tp-mono text-left")
-                                )
-                                with ui.element("div").classes("tp-bar w-full"):
-                                    self.axis_bars.append(ui.element("div"))
-                            for direction, icon in ((-1, "remove"), (1, "add")):
-                                key = ui.button(icon=icon).props("unelevated").classes("tp-key-btn")
-                                key.on("pointerdown", lambda _, a=i, d=direction: self.jog_press(a, d))
-                                self.jog_keys.append(key)
-                    self.update_axis_names()
+                    JogPad(self).build()
                 with ui.column().classes("gap-5 w-full"):
                     with self.card(self.tr("jog.speed")):
                         with ui.row().classes("w-full items-center no-wrap gap-4"):
-                            ui.slider(
+                            self.jog_speed_slider = ui.slider(
                                 min=1,
                                 max=100,
                                 step=1,
@@ -685,6 +684,7 @@ class Pendant:
                             on_change=lambda e: self.set_increment(e.value),
                         )
                         inc.props("no-caps unelevated").classes("tp-seg")
+                        self.increment_toggle = inc
                         self.increment_unit = ui.label("").classes("tp-muted mt-1")
                     with self.card(self.tr("coord.system")):
                         with ui.row().classes("w-full gap-3 no-wrap"):
@@ -771,17 +771,29 @@ class Pendant:
     def set_jog_mode(self, mode: str) -> None:
         self.jog_mode = mode
         self.remember("jog_mode", mode)
-        self.update_axis_names()
-        self.update_increment_unit()
+        self.sync_jog()
 
     def set_jog_speed(self, v: float) -> None:
         self.jog_speed = float(v)
         self.remember("jog_speed", self.jog_speed)
-        self.jog_speed_label.set_text(f"{self.jog_speed:.0f} %")
+        self.sync_jog()
 
     def set_increment(self, v: str) -> None:
         self.increment = v
         self.remember("increment", v)
+        self.sync_jog()
+
+    def sync_jog(self) -> None:
+        """Mode, speed and increment on the jog page and on every jog pad (also in dialogs)."""
+        pairs: tuple[tuple[Any, Any], ...] = ((self.jog_mode_toggle, self.jog_mode),
+                                              (self.jog_speed_slider, self.jog_speed),
+                                              (self.increment_toggle, self.increment))  # fmt: skip
+        for control, value in pairs:
+            if control.value != value:
+                control.set_value(value)
+        self.jog_speed_label.set_text(f"{self.jog_speed:.0f} %")
+        for pad in self.jog_pads:
+            pad.sync()
         self.update_increment_unit()
 
     def update_increment_unit(self) -> None:
@@ -792,11 +804,6 @@ class Pendant:
         else:
             text = f"{self.increment} mm / {self.increment} °"
         self.increment_unit.set_text(text)
-
-    def update_axis_names(self) -> None:
-        names = JOINTS if self.jog_mode == "axes" else CARTESIAN
-        for label, name in zip(self.axis_names, names, strict=True):
-            label.set_text(name)
 
     # ------------------------------------------------------------------ program
 
@@ -1072,7 +1079,7 @@ class Pendant:
         self.ws.changed()
 
     async def rename_dialog(self, name: str) -> None:
-        with ui.dialog() as dialog, ui.card().classes("min-w-[320px]"):
+        with self.dialog() as dialog, ui.card().classes("min-w-[320px]"):
             ui.label(self.tr("point.rename")).classes("text-[17px] font-semibold")
             field_ = ui.input(self.tr("common.name"), value=name).props("filled autofocus").classes("w-full")
             with ui.row().classes("w-full justify-end gap-2"):
@@ -1101,7 +1108,7 @@ class Pendant:
         self.ws.changed()
 
     async def confirm(self, text: str, danger: bool = False) -> bool:
-        with ui.dialog() as dialog, ui.card().classes("min-w-[320px]"):
+        with self.dialog() as dialog, ui.card().classes("min-w-[320px]"):
             ui.label(text).classes("text-[17px] font-medium")
             with ui.row().classes("w-full justify-end gap-2"):
                 ui.button(self.tr("common.cancel"), on_click=lambda: dialog.submit(False)).props(
@@ -1134,7 +1141,7 @@ class Pendant:
 
     async def open_dialog(self) -> None:
         files = self.ws.files()
-        with ui.dialog() as dialog, ui.card().classes("min-w-[360px]"):
+        with self.dialog() as dialog, ui.card().classes("min-w-[360px]"):
             ui.label(self.tr("prog.open")).classes("text-[17px] font-semibold")
             if not files:
                 ui.label("–").classes("tp-empty w-full")
@@ -1315,17 +1322,9 @@ class Pendant:
         self.jog_banner.set_visibility(ready and (not s.enabled or not jog_supported))
         self.jog_banner_text.set_text(self.tr("jog.need_enable" if jog_supported else "jog.unsupported"))
         self.jog_banner_btn.set_visibility(jog_supported)
-        can_jog = ready and s.enabled and jog_supported and s.activity in (Activity.IDLE, Activity.JOGGING)
-        for jog_key in self.jog_keys:
-            self.put(jog_key, "classes", "tp-key-btn" if can_jog else "tp-key-btn disabled")
+        for pad in list(self.jog_pads):
+            pad.update(s)
         axes = self.jog_mode == "axes"
-        values = s.joints if axes else s.cartesian
-        for i, (label, bar) in enumerate(zip(self.axis_values, self.axis_bars, strict=True)):
-            v = values[i]
-            label.set_text(_fmt(v) if s.position_valid else "–")
-            span = JOINT_RANGE if axes else CART_RANGES[i] * 2
-            w = min(50.0, abs(v) / span * 100.0)
-            self.put(bar, "style", f"left: {50.0 - w if v < 0 else 50.0:.1f}%; width: {w:.1f}%")
         other = s.cartesian if axes else s.joints
         names = CARTESIAN if axes else JOINTS
         self.other_title.set_text(self.tr("pos.tcp" if axes else "pos.joints"))

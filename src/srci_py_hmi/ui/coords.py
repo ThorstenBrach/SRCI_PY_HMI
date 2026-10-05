@@ -15,6 +15,7 @@ from nicegui import ui
 
 from srci_py_hmi.model import CARTESIAN
 from srci_py_hmi.robot import CoordData
+from srci_py_hmi.ui.jog_pad import JogPad
 
 if TYPE_CHECKING:
     from srci_py_hmi.ui.pendant import Pendant
@@ -139,7 +140,7 @@ class CoordPage:
         p = self.p
         d = copy.deepcopy(load)
         names = p.ws.labels.setdefault("load", {})
-        with ui.dialog() as dialog, ui.card().classes("min-w-[340px] max-w-[560px] w-full gap-3"):
+        with p.dialog() as dialog, ui.card().classes("min-w-[340px] max-w-[560px] w-full gap-3"):
             ui.label(f"L{d.no}").classes("text-[20px] font-semibold")
             name_in = ui.input(p.tr("coord.name"), value=names.get(str(d.no), "")).props("filled").classes("w-full")
             mass = ui.number(p.tr("load.mass"), value=d.mass, min=0, format="%.3f", suffix="kg").props(
@@ -254,7 +255,7 @@ class CoordPage:
         d = copy.deepcopy(data)
         name = p.ws.labels.get(self.kind, {}).get(str(d.no), "")
         title = label(p, self.kind, d.no)
-        with ui.dialog() as dialog, ui.card().classes("min-w-[340px] max-w-[560px] w-full gap-3"):
+        with p.dialog() as dialog, ui.card().classes("min-w-[340px] max-w-[560px] w-full gap-3"):
             ui.label(title).classes("text-[20px] font-semibold")
             name_in = ui.input(p.tr("coord.name"), value=name).props("filled").classes("w-full")
             inputs = []
@@ -291,12 +292,17 @@ class CoordPage:
                 ui.button(p.tr("coord.from_tcp"), icon="my_location", on_click=take_tcp).props(
                     "flat no-caps"
                 ).classes("tp-btn-soft self-start").tooltip(p.tr("coord.from_tcp_hint"))
+            pad = jog_expansion(p)
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
                 ui.button(p.tr("common.cancel"), on_click=lambda: dialog.submit(False)).props("flat no-caps")
                 ui.button(p.tr("coord.write"), on_click=lambda: dialog.submit(True)).props(
                     "unelevated no-caps color=primary"
                 ).mark("coord-write")
-        if not await dialog:
+        try:
+            confirmed = await dialog
+        finally:
+            pad.close()
+        if not confirmed:
             return
         d.values = [float(i.value or 0.0) for i in inputs]
         if self.kind == TOOL:
@@ -329,6 +335,12 @@ class CoordPage:
         else:
             labels.pop(str(no), None)
         self.p.ws.save_labels()
+
+
+def jog_expansion(p: Pendant) -> JogPad:
+    """"Move the robot" inside a dialog (collapsed): the jog keys without leaving the dialog."""
+    with ui.expansion(p.tr("jog.in_dialog"), icon="open_with").classes("w-full tp-card-2").props("dense"):
+        return JogPad(p, compact=True).build()
 
 
 def load_labels(path: Any) -> dict[str, dict[str, str]]:

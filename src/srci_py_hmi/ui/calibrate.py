@@ -14,6 +14,7 @@ from srci.types import FrameCalculationMode, ToolCalculationMode
 from srci_py_hmi.model import CARTESIAN
 from srci_py_hmi.robot import CoordData, ToolResult
 from srci_py_hmi.ui import coords
+from srci_py_hmi.ui.jog_pad import JogPad
 
 if TYPE_CHECKING:
     from srci_py_hmi.ui.pendant import Pendant
@@ -166,22 +167,32 @@ async def calibrate(p: Pendant, kind: str, no: int) -> None:
         draw.refresh()
 
     function = "CalculateTool" if tool else "CalculateFrame"
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-[680px] gap-3"):
+    with p.dialog() as dialog, ui.card().classes(
+        "w-full max-w-[1180px] gap-3"
+    ):
         ui.label(p.tr("cal.title", name=coords.label(p, kind, no))).classes("text-[22px] font-bold")
         if not p.snap.can(function):
             ui.label(p.tr("caps.not_supported", f=function)).classes("tp-banner err w-full")
-        with ui.row().classes("w-full gap-3 no-wrap"):
-            ui.select({m.key: p.tr(f"cal.{m.key}") for m in methods}, value=state["method"], label=p.tr("cal.method"),
-                      on_change=lambda: restart()).bind_value(
-                state, "method").props("filled").classes("flex-1").mark("cal-method")  # fmt: skip
-            if not tool:
-                ui.select({k: v for k, v in coords.options(p, coords.FRAME).items() if k != no}, value=0,
-                          label=p.tr("coord.reference"),
-                          on_change=lambda: restart()).bind_value(state, "reference").props(
-                    "filled").classes("w-48")  # fmt: skip
-        ui.label(p.tr("cal.tool_hint" if tool else "cal.frame_hint")).classes("tp-muted -mt-1")
-        draw()
-    result = await dialog
+        # left: the positions of the method, right: jog the robot to them without leaving the dialog
+        with ui.element("div").classes("grid w-full gap-5 items-start lg:grid-cols-[1fr_400px]"):
+            with ui.column().classes("w-full gap-3"):
+                with ui.row().classes("w-full gap-3 no-wrap"):
+                    ui.select({m.key: p.tr(f"cal.{m.key}") for m in methods}, value=state["method"],
+                              label=p.tr("cal.method"), on_change=lambda: restart()).bind_value(
+                        state, "method").props("filled").classes("flex-1").mark("cal-method")  # fmt: skip
+                    if not tool:
+                        ui.select({k: v for k, v in coords.options(p, coords.FRAME).items() if k != no}, value=0,
+                                  label=p.tr("coord.reference"),
+                                  on_change=lambda: restart()).bind_value(state, "reference").props(
+                            "filled").classes("w-48")  # fmt: skip
+                ui.label(p.tr("cal.tool_hint" if tool else "cal.frame_hint")).classes("tp-muted -mt-1")
+                draw()
+            with ui.column().classes("w-full gap-1 tp-card-2"):
+                pad = JogPad(p, compact=True).build()
+    try:
+        result = await dialog
+    finally:
+        pad.close()
     if result is None:
         return
     if tool:

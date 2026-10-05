@@ -181,7 +181,7 @@ class IoPage:
         p = self.p
         first = self.first[kind] * 8
         inputs: dict[int, ui.input] = {}
-        with ui.dialog() as dialog, ui.card().classes("w-full max-w-[640px] gap-3"):
+        with p.dialog() as dialog, ui.card().classes("w-full max-w-[640px] gap-3"):
             ui.label(p.tr("io.labels_title", kind=kind.upper(), a=first, b=first + IO_BYTES * 8 - 1)).classes(
                 "text-[20px] font-semibold"
             )

@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
      parameters, system variables (standardized parameter list of the specification or
      manufacturer parameters), kinematics calculator
    - messages with the time they were first seen, acknowledge on the messages page
+   - jog keys inside dialogs: the measuring wizard has its own jog pad (mode, speed, increment,
+     hand guiding), the tool / frame and point dialogs a collapsible "move the robot"
  - Teach pendant for SRCI robots as web UI (NiceGUI) on top of SRCI_PY (`srci-client`):
    pages Connection, Jog, Program, Tools, Frames, Messages; German / English; light / dark theme
  - Connection to the robot behind the PLC gateway or to the SDK simulator; robot data,
@@ -57,6 +59,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
  - Configuration of the RobotTask via `program.ParCfg` (renamed in SRCI_PY)
 
 ### Fixed
+ - Dialogs opened from a list (tools, points, steps) were deleted with the list when it was redrawn
+   (e.g. after writing a tool) - they now live in the page
  - "Switch on" acknowledges a pending error of the RC first (EnableRobot refused with 16#8C04)
  - Jog waits until the sequence of the RC is IDLE or INTERRUPTED (GroupJog refused with 16#8F13)
  - No position polling while another command runs; tools and frames are read in the background

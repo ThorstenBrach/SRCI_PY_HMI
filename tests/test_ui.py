@@ -20,7 +20,7 @@ try:
 except sdk.SdkNotAvailableError as exc:  # pragma: no cover - depends on the machine
     pytest.skip(f"SRCI SDK simulator not available: {exc}", allow_module_level=True)
 
-from nicegui import ui  # noqa: E402
+from nicegui import background_tasks, ui  # noqa: E402
 from nicegui.testing import User, user_simulation  # noqa: E402
 
 from srci_py_hmi.model import Program  # noqa: E402
@@ -34,6 +34,15 @@ async def wait_for(condition: Callable[[], bool], timeout: float = 10.0) -> None
         if time.monotonic() > end:
             raise AssertionError("condition not reached")
         await asyncio.sleep(0.05)
+
+
+def press(button: ui.button) -> None:
+    """pointerdown on a jog key, as the browser sends it when the key is pressed."""
+    for listener in button._event_listeners.values():
+        if listener.type == "pointerdown":
+            result = listener.handler(None)
+            if asyncio.iscoroutine(result):
+                background_tasks.create(result)
 
 
 async def scenario(ws: Workspace) -> None:
@@ -79,6 +88,18 @@ async def run_user(user: User, ws: Workspace) -> None:
     max(numbers, key=lambda n: n.id).set_value(150.0)  # the one in the dialog (created last)
     user.find(marker="coord-write").click()
     await wait_for(lambda: len(ws.tools) > 1 and ws.tools[1].values[2] == 150.0)
+    # measure tool 1: the dialog has its own jog keys - the robot moves without closing it
+    user.find(marker="cal-tool-1").click()
+    await user.should_see(marker="cal-take-tip1")
+    keys = sorted((b for b in user.find(kind=ui.button).elements if "tp-key-btn" in b.classes), key=lambda b: b.id)
+    assert len(keys) == 24  # 12 on the jog page, 12 in the dialog (created later)
+    before = ws.robot.snapshot().joints[0]
+    press(keys[12 + 1])  # J1 + in the dialog
+    for _ in range(10):  # held for 1 s: the heartbeat of the browser
+        ws.robot.alive()
+        await asyncio.sleep(0.1)
+    ws.robot.release()
+    await wait_for(lambda: ws.robot.snapshot().joints[0] > before + 0.1)
 
 
 def test_connect_teach_and_append_step(tmp_path: Path) -> None:
