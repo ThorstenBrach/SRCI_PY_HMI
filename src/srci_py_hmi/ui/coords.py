@@ -17,6 +17,7 @@ from srci_py_hmi.model import CARTESIAN
 from srci_py_hmi.robot import CoordData
 
 if TYPE_CHECKING:
+    from srci_py_hmi.ui.jog_pad import JogPad
     from srci_py_hmi.ui.pendant import Pendant
 
 TOOL, FRAME = "tool", "frame"
@@ -31,11 +32,14 @@ def label(p: Pendant, kind: str, no: int) -> str:
     return f"{prefix}{no} {name}".strip()
 
 
-def options(p: Pendant, kind: str) -> dict[int, str]:
-    """Select options 0..highest (names from the read table and the local labels)."""
+def options(p: Pendant, kind: str, *include: int) -> dict[int, str]:
+    """Select options 0..highest (names from the read table and the local labels). Always with the
+    active tool / frame and ``include`` (e.g. the one stored in a step): a select refuses a value
+    that is not an option - before the RC has reported its tables (page just built) as well."""
     highest = p.snap.highest_tool if kind == TOOL else p.snap.highest_frame
     table = p.ws.tools if kind == TOOL else p.ws.frames
-    count = max(highest + 1, len(table), 1)
+    active = p.robot.tool if kind == TOOL else p.robot.frame
+    count = max(highest + 1, len(table), 1, active + 1, *(int(n) + 1 for n in include))
     return {no: label(p, kind, no) for no in range(count)}
 
 
@@ -59,6 +63,15 @@ class CoordPage:
         return self.p.snap.can(f"Read{self.function}")
 
     @property
+    def can_measure(self) -> bool:
+        """The RC calculates (CalculateTool / CalculateFrame) or the HMI does (it needs the actual
+        position)."""
+        s = self.p.snap
+        return s.can("CalculateTool" if self.kind == TOOL else "CalculateFrame") or (
+            s.can("ReadActualPosition") and self.can_write
+        )
+
+    @property
     def can_write(self) -> bool:
         return self.p.snap.can(f"Write{self.function}")
 
@@ -78,6 +91,105 @@ class CoordPage:
                 )
             with p.card():
                 self.draw()
+            if self.kind == TOOL:
+                with ui.row().classes("w-full items-end justify-between gap-3 mt-2"):
+                    with ui.column().classes("gap-0"):
+                        ui.label(p.tr("load.title")).classes("text-[22px] font-bold")
+                        ui.label(p.tr("load.lead")).classes("tp-lead")
+                    self.load_btn = (
+                        ui.button(p.tr("coord.read"), icon="sync", on_click=self.read_loads)
+                        .props("flat no-caps")
+                        .classes("tp-btn-soft")
+                    )
+                with p.card():
+                    self.draw_loads()
+
+    # ------------------------------------------------------------------ loads (tools page)
+
+    async def read_loads(self) -> None:
+        loads = await self.p.act(self.p.robot.read_loads)
+        if loads is not None:
+            self.p.ws.loads = loads
+            self.draw_loads.refresh()
+
+    @ui.refreshable_method
+    def draw_loads(self) -> None:
+        p = self.p
+        missing = [f for f in ("ReadLoadData", "WriteLoadData") if not p.snap.can(f)]
+        if missing:
+            ui.label(p.tr("caps.not_supported", f=", ".join(missing))).classes("tp-banner w-full mb-2")
+        if not p.ws.loads:
+            ui.label(p.tr("load.none")).classes("tp-empty w-full")
+            return
+        users: dict[int, list[str]] = {}
+        for t in p.ws.tools:
+            users.setdefault(t.load_no, []).append(f"T{t.no}")
+        for load in p.ws.loads:
+            with ui.element("div").classes("tp-item"):
+                ui.label(f"L{load.no}").classes("tp-badge")
+                with ui.column().classes("gap-0 flex-1 min-w-0"):
+                    with ui.row().classes("items-center gap-2"):
+                        name = p.ws.labels.get("load", {}).get(str(load.no), "")
+                        ui.label(name or ("–" if load.no else p.tr("load.zero"))).classes("font-semibold")
+                        ui.label(f"{load.mass:g} kg").classes("tp-chip joint")
+                        used = users.get(load.no, [])
+                        for user in used[:4]:
+                            ui.label(user).classes("tp-chip")
+                        if len(used) > 4:
+                            ui.label(f"+{len(used) - 4}").classes("tp-chip").tooltip(", ".join(used[4:]))
+                    ui.label(
+                        "   ".join(f"{n} {v:.1f}" for n, v in zip(("X", "Y", "Z"), load.values[:3], strict=True))
+                        + "   " + "   ".join(f"{n} {v:.3g}" for n, v in zip(("Ix", "Iy", "Iz"), load.inertia, strict=True))
+                    ).classes("tp-muted tp-mono truncate")
+                if load.no == 0 or not p.snap.can("WriteLoadData"):
+                    ui.icon("lock").classes("text-[var(--text-3)]")
+                else:
+                    ui.button(icon="edit", on_click=lambda d=load: self.edit_load(d)).props("flat round dense").classes(
+                        "text-[var(--blue)]"
+                    ).mark(f"edit-load-{load.no}")
+
+    async def edit_load(self, load: Any) -> None:
+        p = self.p
+        d = copy.deepcopy(load)
+        names = p.ws.labels.setdefault("load", {})
+        with p.dialog() as dialog, ui.card().classes("min-w-[340px] max-w-[560px] w-full gap-3"):
+            ui.label(f"L{d.no}").classes("text-[20px] font-semibold")
+            name_in = ui.input(p.tr("coord.name"), value=names.get(str(d.no), "")).props("filled").classes("w-full")
+            mass = ui.number(p.tr("load.mass"), value=d.mass, min=0, format="%.3f", suffix="kg").props(
+                "filled"
+            ).classes("w-48 tp-mono-in")
+            ui.label(p.tr("load.cog")).classes("tp-card-title mt-1")
+            with ui.element("div").classes("grid grid-cols-3 gap-3 w-full"):
+                cog = [ui.number(n, value=round(v, 3), format="%.3f", suffix="mm" if i < 3 else "°").props("filled dense")
+                       .classes("tp-mono-in") for i, (n, v) in enumerate(zip(CARTESIAN, d.values, strict=True))]  # fmt: skip
+            ui.label(p.tr("load.inertia")).classes("tp-card-title mt-1")
+            with ui.element("div").classes("grid grid-cols-3 gap-3 w-full"):
+                inertia = [ui.number(n, value=v, format="%.5f", suffix="kg m²").props("filled dense").classes("tp-mono-in")
+                           for n, v in zip(("Ix", "Iy", "Iz"), d.inertia, strict=True)]  # fmt: skip
+            ui.label(p.tr("load.hint")).classes("tp-muted")
+            with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                ui.button(p.tr("common.cancel"), on_click=lambda: dialog.submit(False)).props("flat no-caps")
+                ui.button(p.tr("coord.write"), on_click=lambda: dialog.submit(True)).props(
+                    "unelevated no-caps color=primary"
+                ).mark("load-write")
+        if not await dialog:
+            return
+        d.mass = float(mass.value or 0.0)
+        d.values = [float(f.value or 0.0) for f in cog]
+        d.inertia = [float(f.value or 0.0) for f in inertia]
+        text = str(name_in.value or "").strip()
+        if text:
+            names[str(d.no)] = text
+        else:
+            names.pop(str(d.no), None)
+        p.ws.save_labels()
+
+        def write() -> bool:
+            p.robot.write_load(d)
+            return True
+
+        if await p.act(write, done=p.tr("coord.saved", name=f"L{d.no}")):
+            await self.read_loads()
 
     async def read(self) -> None:
         reader = self.p.robot.read_tools if self.kind == TOOL else self.p.robot.read_frames
@@ -127,11 +239,22 @@ class CoordPage:
                 if data.no == 0 or not self.can_write:
                     ui.icon("lock").classes("text-[var(--text-3)]").tooltip(p.tr("coord.fixed"))
                 else:
+                    if self.can_measure:
+                        ui.button(icon="straighten", on_click=lambda n=data.no: self.calibrate(n)).props(
+                            "flat round dense"
+                        ).classes("text-[var(--blue)]").tooltip(p.tr("cal.measure")).mark(
+                            f"cal-{self.kind}-{data.no}"
+                        )
                     ui.button(icon="edit", on_click=lambda d=data: self.edit(d)).props(
                         "flat round dense"
                     ).classes("text-[var(--blue)]").tooltip(p.tr("coord.edit")).mark(
                         f"edit-{self.kind}-{data.no}"
                     )
+
+    async def calibrate(self, no: int) -> None:
+        from srci_py_hmi.ui.calibrate import calibrate
+
+        await calibrate(self.p, self.kind, no)
 
     async def use(self, no: int) -> None:
         robot = self.p.robot
@@ -144,7 +267,7 @@ class CoordPage:
         d = copy.deepcopy(data)
         name = p.ws.labels.get(self.kind, {}).get(str(d.no), "")
         title = label(p, self.kind, d.no)
-        with ui.dialog() as dialog, ui.card().classes("min-w-[340px] max-w-[560px] w-full gap-3"):
+        with p.dialog() as dialog, ui.card().classes("min-w-[340px] max-w-[560px] w-full gap-3"):
             ui.label(title).classes("text-[20px] font-semibold")
             name_in = ui.input(p.tr("coord.name"), value=name).props("filled").classes("w-full")
             inputs = []
@@ -164,7 +287,7 @@ class CoordPage:
             else:
                 ref = (
                     ui.select(
-                        {k: v for k, v in options(p, FRAME).items() if k != d.no},
+                        {k: v for k, v in options(p, FRAME, d.reference).items() if k != d.no},
                         value=d.reference,
                         label=p.tr("coord.reference"),
                     )
@@ -181,12 +304,17 @@ class CoordPage:
                 ui.button(p.tr("coord.from_tcp"), icon="my_location", on_click=take_tcp).props(
                     "flat no-caps"
                 ).classes("tp-btn-soft self-start").tooltip(p.tr("coord.from_tcp_hint"))
+            pad = jog_expansion(p)
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
                 ui.button(p.tr("common.cancel"), on_click=lambda: dialog.submit(False)).props("flat no-caps")
                 ui.button(p.tr("coord.write"), on_click=lambda: dialog.submit(True)).props(
                     "unelevated no-caps color=primary"
                 ).mark("coord-write")
-        if not await dialog:
+        try:
+            confirmed = await dialog
+        finally:
+            pad.close()
+        if not confirmed:
             return
         d.values = [float(i.value or 0.0) for i in inputs]
         if self.kind == TOOL:
@@ -219,6 +347,17 @@ class CoordPage:
         else:
             labels.pop(str(no), None)
         self.p.ws.save_labels()
+
+
+def jog_expansion(p: Pendant) -> JogPad:
+    """"Move the robot" inside a dialog (collapsed): the jog keys without leaving the dialog."""
+    from srci_py_hmi.ui.jog_pad import JogPad  # jog_pad uses this module (tool / frame options)
+
+    with ui.expansion(p.tr("jog.in_dialog"), icon="open_with").classes("w-full tp-card-2").props("dense") as box:
+        pad = JogPad(p, compact=True).build()
+    pad.container = box
+    pad.update(p.snap)
+    return pad
 
 
 def load_labels(path: Any) -> dict[str, dict[str, str]]:

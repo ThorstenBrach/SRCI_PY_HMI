@@ -182,7 +182,7 @@ def test_all_motion_types_with_dynamics(robot: RobotService) -> None:
     p = Program()
     p.add_point([0.0] * 6, [0.0] * 6, name="A")
     p.add_point([20.0, 0, 0, 0, 0, 0], [20.0, 0, 0, 0, 0, 0], name="B")
-    for motion in Motion:
+    for motion in (Motion.LINEAR, Motion.PTP, Motion.JOINT):
         # the harness supports CORNER_DISTANCE and RAMP_OVERLAP (SDK default: none)
         p.add_step("B", motion, 50.0, 5.0, blending_mode="CORNER_DISTANCE", acceleration=50.0)
         p.add_step("A", motion, 50.0, 50.0, blending_mode="RAMP_OVERLAP")
@@ -248,3 +248,154 @@ def test_blending_modes_accepted_and_refused_are_remembered(robot: RobotService)
         robot.run_program(q, hold=False)
     assert robot.blending_results["CORNER_DISTANCE_2R"] is False
     assert Target().lifesign_ms == 500  # JAKA: no LifeSign for ~200 ms after a rejected command
+
+
+def _background(fn: object, *args: object, **kwargs: object) -> tuple[threading.Thread, list[object]]:
+    """Run ``fn`` in a thread; the list gets its result or exception."""
+    out: list[object] = []
+
+    def run() -> None:
+        try:
+            out.append(fn(*args, **kwargs))  # type: ignore[operator]
+        except BaseException as exc:
+            out.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    return worker, out
+
+
+def test_program_with_all_step_kinds(robot: RobotService) -> None:
+    from srci_py_hmi.model import Step, StepKind
+
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([0.0] * 6, [0.0] * 6, name="A")
+    p.add_point([20.0, 0, 0, 0, 0, 0], [20.0, 0, 0, 0, 0, 0], name="B")
+    p.add_step("B")
+    p.insert_step(Step("B", Motion.CIRC, via="A"))
+    p.insert_step(Step("", Motion.JOINT, kind=StepKind.RELATIVE, offset=[5.0, 0, 0, 0, 0, 0]))
+    p.insert_step(Step("", Motion.LINEAR, kind=StepKind.RELATIVE, offset=[0, 0, 10.0, 0, 0, 0]))
+    p.insert_step(Step("", kind=StepKind.WAIT, duration=0.3))
+    p.insert_step(Step("", kind=StepKind.OUTPUT, signal=9, value=True))
+    p.insert_step(Step("", kind=StepKind.WAIT_INPUT, signal=2, value=False, timeout=2.0))  # inputs of the sim: 0
+    p.insert_step(Step("", kind=StepKind.SUBPROGRAM, job=1))
+    p.insert_step(Step("", kind=StepKind.WAIT, duration=60.0, enabled=False))  # skipped
+    p.add_step("A")
+    seen: list[int] = []
+    started = time.monotonic()
+    assert robot.run_program(p, hold=False, on_step=seen.append) == len(p.steps)
+    assert time.monotonic() - started < 30.0
+    assert 8 not in seen and seen[-1] == 9
+
+
+def test_wait_for_input_times_out_and_stop_ends_a_wait(robot: RobotService) -> None:
+    from srci_py_hmi.model import Step, StepKind
+
+    robot.set_enabled(True)
+    p = Program()
+    p.insert_step(Step("", kind=StepKind.WAIT_INPUT, signal=2, value=True, timeout=0.5))
+    with pytest.raises(Exception, match="DI 2"):
+        robot.run_program(p, hold=False)
+    q = Program()
+    q.insert_step(Step("", kind=StepKind.WAIT, duration=30.0))
+    worker, out = _background(robot.run_program, q, hold=False)
+    time.sleep(0.5)
+    robot.stop()
+    worker.join(5.0)
+    assert not worker.is_alive() and "stopped" in str(out[0])
+
+
+def test_stop_point_waits_for_continue(robot: RobotService) -> None:
+    from srci_py_hmi.model import Step, StepKind
+
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([10.0, 0, 0, 0, 0, 0], [0.0] * 6)
+    p.insert_step(Step("", kind=StepKind.HALT))
+    p.add_step("P1")
+    worker, out = _background(robot.run_program, p, hold=False)
+    time.sleep(0.8)
+    assert robot.snapshot().halted and worker.is_alive()
+    robot.resume()
+    worker.join(10.0)
+    assert out == [2] and not robot.snapshot().halted
+    assert joints(robot)[0] == 10.0
+
+
+def test_interrupt_and_continue_a_program(robot: RobotService) -> None:
+    robot.set_enabled(True)
+    p = Program()
+    p.add_point([40.0, 0, 0, 0, 0, 0], [0.0] * 6)
+    p.add_step("P1", velocity=5.0)
+    worker, out = _background(robot.run_program, p, hold=False)
+    time.sleep(0.4)
+    robot.interrupt()
+    time.sleep(0.5)
+    assert robot.snapshot().interrupted and worker.is_alive()
+    robot.resume()
+    worker.join(30.0)
+    assert out == [1]
+
+
+def test_io_and_registers(robot: RobotService) -> None:
+    assert len(robot.read_io(0)) == 5 and len(robot.read_io(10, outputs=True)) == 5
+    robot.write_output(9, True)
+    robot.write_registers(False, 0, [1, 2, 3, 4, 5, 6, 7])
+    robot.write_registers(True, 7, [0.5] * 7)
+    assert len(robot.read_registers(False, 0)) == 7
+    with pytest.raises(ValueError):
+        robot.write_registers(False, 0, [1, 2])
+    with pytest.raises(ValueError):
+        robot.read_io(300)
+
+
+def test_loads_dynamics_limits_and_dh(robot: RobotService) -> None:
+    from srci_py_hmi.robot import LoadInfo
+
+    loads = robot.read_loads()
+    assert loads and loads[0].no == 1
+    robot.write_load(LoadInfo(1, [0.0, 0.0, 50.0, 0.0, 0.0, 0.0], 2.5, [0.01, 0.01, 0.02]))
+    with pytest.raises(ValueError):
+        robot.write_load(LoadInfo(0, [0.0] * 6, 1.0))
+    d = robot.read_dynamics()
+    assert len(d.default) == 4 and d.reference[0] > 0
+    robot.write_default_dynamics([50.0, 50.0, 50.0, 50.0])
+    robot.write_reference_dynamics(d.reference)
+    limits = robot.read_sw_limits()
+    assert len(limits) == 6 and all(lo < hi for lo, hi in limits)
+    assert robot.write_sw_limits(limits) in (True, False)
+    with pytest.raises(ValueError):
+        robot.write_sw_limits([(10.0, -10.0)] * 6)
+    assert set(robot.read_dh()) == {"alpha", "a", "d", "theta", "direction", "zero"}
+
+
+def test_system_variables_and_calculations(robot: RobotService) -> None:
+    from srci.types import FrameCalculationMode, ToolCalculationMode, TransformMode
+
+    from srci_py_hmi import sysvars
+
+    values = robot.read_system_variable(15, list(range(1, 13)))  # 12 sub-parameters: two commands
+    assert [v.sub for v in values] == list(range(1, 13))
+    robot.write_system_variable(32, [sysvars.Value.encode(1, sysvars.UINT, 500)])
+    assert len(robot.forward_kinematics([0.0, 30.0, 60.0, 0.0, 90.0, 0.0], 0, 0)) == 6
+    assert len(robot.inverse_kinematics([300.0, 0.0, 300.0, 180.0, 0.0, 0.0], 0, 0)) == 6
+    tips = [[100.0, 0, 0, 0, 0, 0], [0, 100.0, 0, 0, 0, 0], [-100.0, 0, 0, 0, 0, 0]]
+    assert len(robot.calculate_tool(ToolCalculationMode.THREE_POINT_METHOD, tips, 1).values) == 6
+    frame = robot.calculate_frame(FrameCalculationMode.THREE_POINT_METHOD, 1, 0,
+                                  {"Origin": tips[0], "Position_X": tips[1], "Position_XY": tips[2]})  # fmt: skip
+    assert len(frame) == 6
+    assert len(robot.shift_position(TransformMode.SHIFT_BY_VECTOR, [0.0] * 6, 0, [10.0, 0, 0, 0, 0, 0])) == 6
+
+
+def test_operation_mode_and_hand_guiding(robot: RobotService) -> None:
+    from srci.types import OperationMode
+
+    robot.set_operation_mode(OperationMode.T1_EXT)
+    with pytest.raises(ValueError):
+        robot.set_operation_mode(OperationMode.T1_LOCAL)
+    robot.set_enabled(True)
+    robot.free_drive_press()
+    assert robot.snapshot().activity is Activity.FREE_DRIVE
+    time.sleep(3.5)  # no heartbeat: the watchdog ends the hand guiding (the sim needs ~2 s to disable)
+    assert robot.snapshot().activity is Activity.IDLE

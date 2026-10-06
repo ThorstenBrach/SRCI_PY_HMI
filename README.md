@@ -1,46 +1,52 @@
-# SRCI_PY_HMI – Bedienoberfläche zum Einrichten und Teachen von SRCI-Robotern
+# SRCI_PY_HMI – teach pendant for setting up and teaching SRCI robots
 
-Eine Weboberfläche im Stil eines Tablets (NiceGUI) auf Basis des Python-Clients
-[`srci`](https://github.com/ThorstenBrach/SRCI_CLIENT_PY) (SRCI_PY). Man verbindet sich damit über das SPS-Gateway mit dem Roboter, schaltet ihn ein,
-verfährt ihn per Tippbetrieb, teacht Punkte und fährt daraus Programme ab.
+A tablet-style web user interface (NiceGUI) on top of the Python client
+[`srci`](https://github.com/ThorstenBrach/SRCI_CLIENT_PY) (SRCI_PY). It connects to the robot
+through the PLC gateway, switches it on, jogs it, teaches points and runs programs made of them.
 
 <p>
-  <img src="docs/images/jog.png" alt="Bewegen" width="49%">
-  <img src="docs/images/step_editor.png" alt="Schritt bearbeiten" width="49%">
+  <img src="docs/images/manual/03_jog.png" alt="Jog" width="49%">
+  <img src="docs/images/manual/04_program.png" alt="Program" width="49%">
+  <img src="docs/images/manual/13_io.png" alt="I/O" width="49%">
+  <img src="docs/images/manual/11_measure_tool.png" alt="Measure a tool" width="49%">
 </p>
 
 ```
-Browser / Tablet  --HTTP-->  srci-hmi (Python, NiceGUI)  --TCP-->  SPS-Gateway  --PROFINET-->  Roboter
-                                     └─ oder: SRCI-SDK-Simulator (lokal, ohne Roboter)
+Browser / tablet  --HTTP-->  srci-hmi (Python, NiceGUI)  --TCP-->  PLC gateway  --PROFINET-->  robot
+                                     └─ or: SRCI SDK simulator (local, without a robot)
 ```
 
-## Funktionen
+**Operating manual:** [docs/OPERATING_MANUAL.md](docs/OPERATING_MANUAL.md)
 
-| Seite | Inhalt |
+## Features
+
+| Page | Content |
 |---|---|
-| **Verbindung** | Roboter (IP/Port/Telegrammlänge des Gateways) oder SDK-Simulator, LifeSign-Timeout (100/250/500/1000 ms oder frei, wird gemerkt), Roboter ein/aus (quittiert vorher anstehende Fehler mit GroupReset), Quittieren, Geschwindigkeits-Override, Roboterdaten und **Fähigkeiten**: welche Funktionen die Steuerung in `RCSupportedFunctions` meldet. Nicht gemeldete Funktionen werden in der Oberfläche gesperrt und nie gesendet |
-| **Bewegen** | Tippen in Achsen, Basis oder Werkzeug, stufenlos oder in Schritten (0,1 / 1 / 10), Tippgeschwindigkeit. Auswahl von Werkzeug und Koordinatensystem; diese gelten für die TCP-Anzeige, das kartesische Tippen und das Teachen (der Punkt merkt sich Tool und Frame). Live-Position, „Punkt teachen“ |
-| **Programm** | Punkte (anfahren, neu teachen, umbenennen, löschen) und Ablauf. Einen Schritt antippen öffnet den Editor: Bewegungsart **LIN** (MoveLinearAbsolute), **PTP** (MoveDirectAbsolute, kartesisches Ziel achsinterpoliert) oder **Joint** (MoveAxesAbsolute, Achswinkel), jeweils mit Genauhalt oder Überschleifen (Art laut Spez, Wert vor dem Punkt und – bei „zwei Radien“ – nach dem Punkt; Arten, die der Roboter in dieser Verbindung abgelehnt hat, sind markiert), dazu Geschwindigkeit, Beschleunigung, Verzögerung und Ruck in % oder „Standard“ der RC. Start, Einzelschritt, Sichern und Öffnen als JSON |
-| **Werkzeuge** | Tool-Tabelle der Robotersteuerung lesen (ReadToolData) und einzelne Tools schreiben (WriteToolData): X, Y, Z, Rx, Ry, Rz, Last-Nr., externer TCP. Lokale Bezeichnungen wie „Greifer“ stehen in `programs/labels.json`. T0 (Flansch) ist fest |
-| **Koordinatensysteme** | Frames lesen und schreiben (Read/WriteFrameData), mit Bezugssystem. „Aktuelle TCP-Position übernehmen“ setzt den Ursprung eines Frames auf den TCP. F0 (Basis) ist fest |
-| **Meldungen** | Meldungen der Robotersteuerung und der letzte Fehler |
+| **Connection** | Robot (IP / port / telegram length of the gateway) or SDK simulator, LifeSign timeout (100 / 250 / 500 / 1000 ms or free, remembered), robot on / off (acknowledges pending errors with GroupReset first), reset, speed override, robot data and **capabilities**: the functions the controller reports in `RCSupportedFunctions`. Functions it does not report are disabled in the user interface and never sent. Status tiles (drives, error, communication, sequence), external **operation mode** Automatic / T1 / T2 (SetOperationMode), **home position** (set, move to), **diagnostics** (on the path, secondary sequence, operating hours, last error IDs) |
+| **Jog** | Jogging in joints, base or tool, continuous or in increments (0.1 / 1 / 10), jog speed. Choice of tool and frame; they are used for the TCP display, Cartesian jogging and teaching (a point remembers its tool and frame). Live position, "Teach point", **hand guiding** (FreeDrive, hold), **move to a target position**: enter joint or Cartesian values (Joint / PTP / LIN) |
+| **Program** | Points (move to, teach again, edit, rename, delete) and sequence. Tapping a step opens the editor: motion type **LIN** (MoveLinearAbsolute), **PTP** (MoveDirectAbsolute, Cartesian target, joint interpolated), **Joint** (MoveAxesAbsolute, joint angles) or **CIRC** through a via point (MoveCircularAbsolute), each with exact stop or blending (modes of the spec, value before and – for "two radii" – after the point; modes the robot refused in this connection are marked), plus velocity, acceleration, deceleration and jerk in % or the default of the RC. Further step kinds: **relative** motion (MoveLinear/Direct/AxesRelative, in the tool or the frame), **wait**, **set output** (WriteDigitalOutputs), **wait for input** (ReadDigitalInputs, with timeout), **subprogram** (CallSubprogram) and **stop point**. Steps can be skipped and commented; **sequence settings** set blending and dynamics for all steps. Edit points numerically (with the forward / inverse kinematics of the RC) and **shift, mirror, rotate** them (ShiftPosition). Start, single step, **step back**, status line with progress, **pause / continue** and **return to path** (GroupInterrupt, GroupContinue, ReturnToPrimary), save and open as JSON |
+| **Tools** | Read the tool table of the robot controller (ReadToolData) and write single tools (WriteToolData): X, Y, Z, Rx, Ry, Rz, load no., external TCP. Local labels like "Gripper" are stored in `programs/labels.json`. T0 (flange) is fixed. **Measure** with the RC (CalculateTool: 3, 4, 5, 6 points, 2 points + Z, ABC world, ABC 2 points); the wizard has its own jog keys, the robot is moved right in the dialog. If the robot controller does not report `CalculateTool` / `CalculateFrame` (profile Core, e.g. JAKA MiniCobo), the HMI calculates itself: tool 3 / 4 points and ABC world, frame 3, 4 and 1 point. Read and write **loads** (Read/WriteLoadData: mass, center of gravity, inertia) |
+| **Frames** | Read and write frames (Read/WriteFrameData) with reference frame. "Take the actual TCP position" sets the origin of a frame to the TCP. F0 (base) is fixed. **Measure** with the RC (CalculateFrame: 3 points, 4 points with origin shift, 1 point) |
+| **I/O** | Digital inputs and outputs as a grid of signals, read live (Read/WriteDigitalInputs/Outputs); tapping an output switches it. Local labels per signal. Read and write integer and real registers (Read/WriteIntegers, Read/WriteReals) |
+| **System** | Default and reference dynamics (Read/WriteRobotDefault/ReferenceDynamics), software limits with bars and the actual joint position (Read/WriteRobotSWLimits, factory defaults), DH parameters, **system variables** with the standard parameter list of the specification or manufacturer parameters (Read/WriteSystemVariable), kinematics calculator (CalculateForward/InverseKinematic) |
+| **Messages** | Messages of the robot controller with the time they were first seen, reset and the last error |
 
-Immer sichtbar: der Status („Bereit · Ein“, „Fährt“, „Störung“ …) und die rote **STOPP**-Taste
-(GroupStop). Texte auf Deutsch und Englisch, helles und dunkles Design.
+Always visible: the status ("Ready · On", "Moving", "Interrupted", "Fault" …), during a motion the
+**Pause / Continue** key, and the red **STOP** key (GroupStop). Texts in German and English, light
+and dark theme.
 
-## Sicherheit
+## Safety
 
-- **Halten zum Fahren:** Tippen, „Anfahren“ und der Programmstart fahren nur, solange die Taste
-  gedrückt ist. Der Browser schickt dabei alle 100 ms ein Lebenszeichen. Fehlt es 0,5 s lang,
-  stoppt der Robot-Service die Bewegung. Das greift auch, wenn man loslässt, den Tab wechselt
-  oder das WLAN abbricht.
-- „Ohne Halten fahren“ lässt sich auf der Programmseite einschalten (nur mit freiem
-  Arbeitsraum und Not-Halt in Reichweite).
-- SRCI ist keine Sicherheitsschnittstelle. Not-Halt, Schutzeinrichtungen und sichere
-  Geschwindigkeiten bleiben Aufgabe der Robotersteuerung.
-- Standardmäßig ist die Oberfläche nur auf dem eigenen PC erreichbar (`127.0.0.1`). Mit
-  `--host 0.0.0.0` erreicht man sie auch vom Tablet aus. Dann kann aber **jeder im Netz, der den
-  Port erreicht, den Roboter bewegen**. Das also nur in einem abgeschotteten Zellennetz verwenden.
+- **Hold to run:** jogging, "Move to" and the program start move only while the key is held.
+  The browser sends a heartbeat every 100 ms. If it is missing for 0.5 s, the robot service stops
+  the motion. This also applies when the key is released, the tab is switched or the Wi-Fi drops.
+- "Run without holding" can be switched on on the program page (only with a clear working area
+  and the emergency stop within reach).
+- SRCI is not a safety interface. Emergency stop, safeguards and safe speeds remain the task of the
+  robot controller.
+- By default the user interface can only be reached on the own PC (`127.0.0.1`). With
+  `--host 0.0.0.0` it can be reached from a tablet as well – but then **everybody in the network
+  who reaches the port can move the robot**. Use this only in an isolated cell network.
 
 ## Installation
 
@@ -55,77 +61,104 @@ pip install -e .[dev]
 ## Start
 
 ```bat
-srci-hmi                                     :: http://127.0.0.1:8080, Gateway 192.168.2.10:5000
+srci-hmi                                     :: http://127.0.0.1:8080, gateway 192.168.2.10:5000
 srci-hmi --robot 192.168.2.10 --robot-port 5000 --length 256
-srci-hmi --lifesign 500                      :: LifeSign-Timeout [ms] (sonst der zuletzt eingestellte)
-srci-hmi --simulator                         :: SDK-Simulator vorausgewählt (SRCI_SDK_SIM_LIB)
-srci-hmi --log hmi.log                       :: Logdatei mit dem Systemlog aller Funktionsbausteine
-srci-hmi --host 0.0.0.0 --port 8080          :: vom Tablet erreichbar (siehe Sicherheit)
-srci-hmi --native                            :: eigenes Fenster statt Browser (pywebview)
+srci-hmi --lifesign 500                      :: LifeSign timeout [ms] (else the one set last)
+srci-hmi --simulator                         :: SDK simulator preselected (SRCI_SDK_SIM_LIB)
+srci-hmi --log hmi.log                       :: log file with the system log of all function blocks
+srci-hmi --host 0.0.0.0 --port 8080          :: reachable from a tablet (see Safety)
+srci-hmi --native                            :: own window instead of the browser (pywebview)
 ```
 
-`python -m srci_py_hmi` geht genauso. Am besten im Ordner `SRCI_PY_HMI` starten: Programme
-(`programs/`) und Einstellungen des Browsers (`.nicegui/`) landen im aktuellen Ordner.
+`python -m srci_py_hmi` works the same way. Best start it in the folder `SRCI_PY_HMI`: programs
+(`programs/`) and the browser settings (`.nicegui/`) are stored in the current folder.
 
-Die Programme liegen als JSON im Ordner `programs` (Option `--programs`). Sie sind lesbar
-und lassen sich versionieren. Format 1 (ältere Version) wird weiterhin gelesen:
+Programs are JSON files in the folder `programs` (option `--programs`). They are readable and can
+be versioned. Formats 1 and 2 (older versions) are still read. The home position is stored in
+`programs/settings.json`, local labels (tools, frames, loads, signals) in `programs/labels.json`.
 
 ```json
-{ "format": 2, "name": "Palette",
+{ "format": 3, "name": "Pallet",
   "points": [ { "name": "P1", "joints": [0, 30, 60, 0, 90, 0], "cartesian": [-316, -6, 208, 180, 0, 0], "tool": 0, "frame": 0, "note": "" } ],
   "steps":  [ { "point": "P1", "motion": "linear", "velocity": 50.0,
                 "blending_mode": "MAX_CORNER_DEVIATION", "blending": 20.0, "blending_post": 0.0,
-                "acceleration": -1.0, "deceleration": -1.0, "jerk": -1.0 } ] }
+                "acceleration": -1.0, "deceleration": -1.0, "jerk": -1.0 },
+              { "kind": "output", "signal": 3, "value": true, "note": "Close gripper" },
+              { "kind": "wait_input", "signal": 5, "value": true, "timeout": 2.0 },
+              { "kind": "wait", "duration": 0.5, "enabled": false } ] }
 ```
 
-`motion`: `linear`, `ptp` oder `joint`; Dynamik in %, `-1` = Standard der Robotersteuerung.
+`motion`: `linear`, `ptp`, `joint` or `circ` (with `via`); dynamics in %, `-1` = default of the
+robot controller. `kind` (missing for motions to points): `relative` (`offset`, `reference`,
+`tool`, `frame`), `wait` (`duration` s), `output` / `wait_input` (`signal` = byte · 8 + bit,
+`value`, `timeout`), `subprogram` (`job`, `data`), `halt`.
 
-## Bedienung in drei Schritten
+"Wait" waits in the HMI (not with WaitTime): this works with every robot controller, and STOP ends
+it at once. Outputs, inputs, waits and subprograms run when the motions before them are done
+(exact stop before).
 
-1. **Verbindung:** Robotermodus und IP prüfen, „Verbinden“ tippen, dann „Roboter einschalten“.
-2. **Bewegen:** Roboter mit den −/+-Tasten verfahren und „Punkt teachen“ tippen. P1, P2 …
-   werden angelegt.
-3. **Programm:** Bei einem Punkt auf ▸≡ tippen, um ihn als Schritt anzuhängen. Einen Schritt
-   antippen öffnet den Editor (Bewegungsart, Genauhalt oder Überschleifen, Dynamik). Mit „Start“
-   (gedrückt halten) fährt man das Programm ab, mit der Nummer eines Schritts wählt man den
-   Startschritt.
+## Operation in three steps
 
-## Aufbau
+1. **Connection:** check robot mode and IP, tap "Connect", then "Switch robot on".
+2. **Jog:** move the robot with the −/+ keys and tap "Teach point". P1, P2 … are created.
+3. **Program:** tap ≡+ at a point to append it as a step. Tapping a step opens the editor (motion
+   type, exact stop or blending, dynamics). "Start" (hold) runs the program; the number of a step
+   selects the start step.
 
-| Datei | Inhalt |
+"+ Step" adds further step kinds (arc, relative, output, input, wait, subprogram, stop point).
+While a program runs, **Pause** stops the robot; then it can be jogged away (jogging, hand
+guiding), moved back to the interrupted path with **Return to path**, and the program goes on with
+**Continue**. Details: [operating manual](docs/OPERATING_MANUAL.md).
+
+## Structure
+
+| File | Content |
 |---|---|
-| `src/srci_py_hmi/model.py` | Punkte, Schritte, Programm, JSON (ohne Roboter und UI) |
-| `src/srci_py_hmi/robot.py` | `RobotService`: Verbindung, Befehle nacheinander, STOPP sofort, Tippen mit Watchdog, Programmablauf (zwei Bewegungen im Voraus für Überschleifen), Werkzeuge/Koordinatensysteme, Prüfung gegen `RCSupportedFunctions` |
-| `src/srci_py_hmi/app.py` | Start, Kommandozeile |
-| `src/srci_py_hmi/ui/pendant.py` | NiceGUI-Seite (eine Instanz pro Browser-Tab, ein Roboter für alle Tabs) |
-| `src/srci_py_hmi/ui/step_editor.py` | Dialog „Schritt bearbeiten“ |
-| `src/srci_py_hmi/ui/coords.py` | Seiten „Werkzeuge“ und „Koordinatensysteme“ |
-| `src/srci_py_hmi/ui/theme.py` | Farben, CSS, JavaScript für „Halten zum Fahren“ |
-| `src/srci_py_hmi/i18n.py` | Texte DE/EN |
+| `src/srci_py_hmi/model.py` | points, steps, program, JSON (without robot and UI) |
+| `src/srci_py_hmi/robot.py` | `RobotService`: connection, commands one after the other, STOP at once, jogging with watchdog, program run (two motions ahead for blending), tools / frames, checks against `RCSupportedFunctions` |
+| `src/srci_py_hmi/app.py` | start, command line |
+| `src/srci_py_hmi/ui/pendant.py` | NiceGUI page (one instance per browser tab, one robot for all tabs) |
+| `src/srci_py_hmi/ui/jog_pad.py` | jog keys (jog page and dialogs) |
+| `src/srci_py_hmi/ui/step_editor.py` | dialog "Edit step" (all step kinds), sequence settings |
+| `src/srci_py_hmi/ui/coords.py` | pages "Tools" (with loads) and "Frames" |
+| `src/srci_py_hmi/ui/calibrate.py` | wizards "Measure tool / frame" |
+| `src/srci_py_hmi/ui/points.py` | edit point, shift / mirror / rotate |
+| `src/srci_py_hmi/ui/io_page.py` | page "I/O" |
+| `src/srci_py_hmi/ui/system_page.py` | page "System" |
+| `src/srci_py_hmi/geometry.py` | measuring in the HMI (TCP least squares, frames from points), Euler angles as in the specification |
+| `src/srci_py_hmi/sysvars.py` | standard parameter list of the system variables, conversion of the 4-byte values |
+| `src/srci_py_hmi/ui/theme.py` | colours, CSS, JavaScript for hold to run |
+| `src/srci_py_hmi/i18n.py` | texts DE / EN |
 
 ## Tests
 
 ```bat
-pytest            :: Modell; Robot-Service und Oberfläche gegen den SDK-Simulator, wenn SRCI_SDK_SIM_LIB gesetzt ist
+pytest            :: model and geometry; robot service and UI against the SDK simulator if SRCI_SDK_SIM_LIB is set
 ruff check . && mypy
 ```
 
-Das SRCI SDK ist lizenziert und gehört nicht in dieses Repository (siehe `.gitignore`).
+The SRCI SDK is licensed and does not belong in this repository (see `.gitignore`).
 
 ## JAKA MiniCobo
 
-Getestet mit einem JAKA MiniCobo (Controller 1.7.1, SRCI 1.1, nur Profil Core), siehe
+Tested with a JAKA MiniCobo (controller 1.7.1, SRCI 1.1, profile Core only), see
 `SRCI_PY/examples/jaka_minicobo`:
 
-- LIN- und PTP-Schritte werden mit TurnMode FREE und ConfigMode FREE gesendet (TurnMode nimmt der
-  MiniCobo nur als FREE an, ConfigMode als SAME oder FREE).
-- Überschleifen nur mit **MAX_CORNER_DEVIATION** (größte Abweichung von der Ecke in mm). Andere
-  Arten lehnt er mit `16#8E05` ab. Der Editor schlägt die Art vor, die der Roboter in der
-  Verbindung angenommen hat.
-- LifeSign-Timeout mindestens 300 ms, Standard 500 ms. Nach einem abgelehnten Befehl schaltet der
-  JAKA die Antriebe ab und sendet rund 200 ms kein LifeSign. „Roboter einschalten“ quittiert den
-  Fehler vorher mit GroupReset (sonst `16#8C04`).
+- LIN and PTP steps are sent with TurnMode FREE and ConfigMode FREE (the MiniCobo accepts TurnMode
+  only as FREE, ConfigMode as SAME or FREE).
+- Blending only with **MAX_CORNER_DEVIATION** (largest deviation from the corner in mm). It refuses
+  other modes with `16#8E05`. The editor suggests the mode the robot accepted in the connection.
+- LifeSign timeout at least 300 ms, default 500 ms. After a refused command the JAKA switches its
+  drives off and sends no LifeSign for about 200 ms. "Switch robot on" acknowledges the error with
+  GroupReset first (otherwise `16#8C04`).
+- No CalculateTool / CalculateFrame: the HMI measures tools and frames itself.
 
-## Änderungen
+## Roadmap
+
+The comfort functions are planned to move from the HMI into a robot integrator for TwinCAT,
+CODESYS and Python; the HMI then becomes a pure user interface over OPC UA:
+[docs/PLAN_ROBOT_INTEGRATOR.md](docs/PLAN_ROBOT_INTEGRATOR.md) (in German).
+
+## Changes
 
 [CHANGELOG.md](CHANGELOG.md)

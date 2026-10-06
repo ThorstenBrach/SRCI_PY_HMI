@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Added
+ - Functions of the SIMATIC Robot Library / Robot Integrator in the own design:
+   - pause / continue (GroupInterrupt, GroupContinue) next to STOP, "return to path"
+     (ReturnToPrimary) after jogging away; jog and hand guiding also while a program is paused
+   - external operation mode Automatic / T1 / T2 (SetOperationMode), status tiles, home position
+     (save, move to), diagnostics (on the path, secondary sequence, operating hours, error IDs)
+   - hand guiding (FreeDrive, hold-to-run) and "move to a target position" on the jog page
+   - program steps CIRC (MoveCircularAbsolute with via point), relative motions
+     (MoveLinear/Direct/AxesRelative), wait, set output, wait for input, subprogram
+     (CallSubprogram), stop point; skip and comment steps; sequence settings for all steps;
+     single step backwards; status line with progress; program format 3 (1 and 2 are read)
+   - edit points numerically with the kinematics of the RC, shift / mirror / rotate points
+     (ShiftPosition)
+   - measure tools (CalculateTool, 7 methods) and frames (CalculateFrame, 3 methods) with a wizard
+   - measuring also on robots without CalculateTool / CalculateFrame (profile Core, e.g. JAKA
+     MiniCobo): the HMI calculates 3- / 4-point TCP (least squares, with error), ABC world and
+     the 3- / 4- / 1-point frame itself (geometry.py, orientation as in the spec: R = Rz Ry Rx)
+   - loads (Read/WriteLoadData) on the tools page
+   - page I/O: digital inputs / outputs live, outputs switched by a tap, signal labels, integer
+     and real registers
+   - page System: default and reference dynamics, software limits with the joint position, DH
+     parameters, system variables (standardized parameter list of the specification or
+     manufacturer parameters), kinematics calculator
+   - messages with the time they were first seen, acknowledge on the messages page
+   - jog keys inside dialogs: the measuring wizard has its own jog pad (mode, speed, increment,
+     hand guiding, tool and frame), the tool / frame and point dialogs a collapsible "move the robot"
  - Teach pendant for SRCI robots as web UI (NiceGUI) on top of SRCI_PY (`srci-client`):
    pages Connection, Jog, Program, Tools, Frames, Messages; German / English; light / dark theme
  - Connection to the robot behind the PLC gateway or to the SDK simulator; robot data,
@@ -31,12 +56,19 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
  - Tests: model, robot service and UI (simulated browser) against the SDK simulator
 
 ### Changed
+ - README and operating manual (docs/OPERATING_MANUAL.md) in English, screenshots of the English user interface
  - Renamed from SRCI Teach to SRCI_PY_HMI: distribution `srci-py-hmi`, package `srci_py_hmi`,
    command `srci-hmi`. The key file of the stored settings is taken over
    (`~/.srci_teach_secret` -> `~/.srci_py_hmi_secret`)
  - Configuration of the RobotTask via `program.ParCfg` (renamed in SRCI_PY)
 
 ### Fixed
+ - Crash when the page was rebuilt (e.g. language switch) with a tool / frame above the ones the
+   select offered at that moment ("Invalid value: 1")
+ - The jog pad in dialogs is hidden when the RC can neither jog nor guide by hand
+ - A frame chosen right after a tool (or the other way round) could undo the first choice
+ - Dialogs opened from a list (tools, points, steps) were deleted with the list when it was redrawn
+   (e.g. after writing a tool) - they now live in the page
  - "Switch on" acknowledges a pending error of the RC first (EnableRobot refused with 16#8C04)
  - Jog waits until the sequence of the RC is IDLE or INTERRUPTED (GroupJog refused with 16#8F13)
  - No position polling while another command runs; tools and frames are read in the background

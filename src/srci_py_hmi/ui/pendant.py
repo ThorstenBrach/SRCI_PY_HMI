@@ -2,36 +2,49 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from nicegui import app, background_tasks, run, ui
-from srci.types import JogMode
+from srci.types import JogMode, OperationMode
 
 from srci_py_hmi.i18n import LANGUAGES, t
-from srci_py_hmi.model import CARTESIAN, JOINTS, Motion, Program
+from srci_py_hmi.model import CARTESIAN, JOINTS, Motion, Point, Program, StepKind
 from srci_py_hmi.robot import (
     CORE_FUNCTIONS,
-    MOTION_FUNCTIONS,
+    EXTERNAL_MODES,
     Activity,
     CoordData,
+    LoadInfo,
     Phase,
     RobotService,
     Snapshot,
     Target,
+    step_function,
 )
-from srci_py_hmi.ui import coords
-from srci_py_hmi.ui.step_editor import blend_label, edit_step, motion_label
+from srci_py_hmi.ui import coords, points
+from srci_py_hmi.ui.io_page import IoPage
+from srci_py_hmi.ui.jog_pad import JogPad
+from srci_py_hmi.ui.step_editor import (
+    KIND_ICONS,
+    blend_label,
+    edit_step,
+    motion_label,
+    new_step,
+    path_settings,
+    step_title,
+)
+from srci_py_hmi.ui.system_page import SystemPage
 from srci_py_hmi.ui.theme import COLORS, CSS, HOLD_JS
 
 log = logging.getLogger("srci_py_hmi.ui")
 
-# value range of the position bars (joints [deg], X/Y/Z [mm], Rx/Ry/Rz [deg])
-JOINT_RANGE = 360.0
-CART_RANGES = (1000.0, 1000.0, 1000.0, 180.0, 180.0, 180.0)
 INCREMENTS = {"0": 0.0, "0.1": 0.1, "1": 1.0, "10": 10.0}
 JOG_MODES = {"axes": JogMode.JOG_AXES, "base": JogMode.JOG_FRAME, "tool": JogMode.JOG_TOOL}
 
@@ -53,9 +66,30 @@ class Workspace:
     labels: dict[str, dict[str, str]] = field(default_factory=dict)  # local names of tools / frames
     loading_coords: bool = False
     coords_tried: bool = False  # tools / frames read after the current connection
+    loads: list[LoadInfo] = field(default_factory=list)  # last read load table of the RC
+    home: Point | None = None  # home position (settings.json next to the programs)
+    seen_messages: dict[tuple[int, str], float] = field(default_factory=dict)  # message -> first seen
 
     def __post_init__(self) -> None:
         self.labels = coords.load_labels(self.labels_path)
+        try:
+            home = json.loads(self.settings_path.read_text(encoding="utf-8")).get("home")
+            if home:
+                self.home = Point("Home", home["joints"], home["cartesian"], int(home.get("tool", 0)),
+                                  int(home.get("frame", 0)))  # fmt: skip
+        except (OSError, ValueError, KeyError, TypeError):
+            self.home = None
+
+    @property
+    def settings_path(self) -> Path:
+        return self.programs_dir / "settings.json"
+
+    def save_home(self, home: Point) -> None:
+        self.home = home
+        self.programs_dir.mkdir(parents=True, exist_ok=True)
+        data = {"home": {"joints": home.joints, "cartesian": home.cartesian, "tool": home.tool,
+                         "frame": home.frame}}  # fmt: skip
+        self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     @property
     def labels_path(self) -> Path:
@@ -99,14 +133,16 @@ class Pendant:
         self.seen_revision = -1
         self.snap = Snapshot()
         self.nav_buttons: dict[str, ui.button] = {}
-        self.axis_values: list[ui.label] = []
-        self.axis_bars: list[ui.element] = []
-        self.axis_names: list[ui.label] = []
-        self.jog_keys: list[ui.button] = []
         self._sent: dict[tuple[int, str], str] = {}
         self.seen_coords: tuple[object, ...] = ()
         self.seen_blending: tuple[tuple[str, bool], ...] = ()
         self.coord_pages = {kind: coords.CoordPage(self, kind) for kind in (coords.TOOL, coords.FRAME)}
+        self.jog_pads: list[JogPad] = []  # jog page and dialogs that are open
+        self.coord_lock = asyncio.Lock()
+        self.io_page = IoPage(self)
+        self.system_page = SystemPage(self)
+        self.target: dict[str, Any] = {"motion": "joint", "velocity": 10.0}
+        self.target_inputs: list[ui.number] = []
 
     def put(self, element: ui.element, kind: str, value: str) -> None:
         """Set classes / style / props only if they changed (the timer runs every 150 ms and
@@ -121,6 +157,19 @@ class Pendant:
             element.classes(replace=value)
         else:
             element.props(value)
+
+    def dialog(self) -> ui.dialog:
+        """A new dialog in the page (see :attr:`dialog_host`)."""
+        with self.dialog_host:
+            dialog = ui.dialog()
+
+        def closed(e: Any) -> None:
+            if not e.value:  # removed after the closing animation; its values stay readable
+                with self.dialog_host:
+                    ui.timer(1.0, dialog.delete, once=True)
+
+        dialog.on_value_change(closed)
+        return dialog
 
     def tr(self, key: str, **values: object) -> str:
         return t(key, self.lang, **values)
@@ -158,6 +207,67 @@ class Pendant:
         self.held = False
         await self.act(self.robot.stop)
 
+    async def pause(self) -> None:
+        """Pause (GroupInterrupt) or continue (GroupContinue / stop point)."""
+        s = self.snap
+        if s.interrupted or s.halted:
+            await self.act(self.robot.resume)
+        else:
+            await self.act(self.robot.interrupt)
+
+    async def return_to_path(self) -> None:
+        self.held = True
+        await self.act(self.robot.return_to_primary, velocity=self.jog_speed, hold=not self.auto_run,
+                       quiet_stop=True)  # fmt: skip
+        self.held = False
+
+    async def set_mode(self, mode: OperationMode) -> None:
+        if mode.name != self.snap.operation_mode:
+            await self.act(self.robot.set_operation_mode, mode)
+
+    async def free_drive(self) -> None:
+        if not self.snap.enabled:
+            ui.notify(self.tr("jog.need_enable"), type="warning", position="top")
+            return
+        self.held = True
+        await self.act(self.robot.free_drive_press)
+        if not self.held:
+            await run.io_bound(self.robot.release)
+
+    async def move_home(self) -> None:
+        home = self.ws.home
+        if home is None:
+            return
+        self.held = True
+        await self.act(self.robot.move_to, home, Motion.JOINT, self.jog_speed, hold=not self.auto_run,
+                       quiet_stop=True)  # fmt: skip
+        self.held = False
+
+    async def save_home(self) -> None:
+        position = await self.act(self.robot.current_position)
+        if position is None:
+            return
+        joints, cartesian = position
+        self.ws.save_home(points.home_point(joints, cartesian, self.robot.tool, self.robot.frame))
+        self.draw_home.refresh()
+        ui.notify(self.tr("home.saved"), type="positive", position="top", timeout=1500)
+
+    async def move_target(self) -> None:
+        motion = Motion(self.target["motion"])
+        values = [float(f.value or 0.0) for f in self.target_inputs]
+        joints, cart = (values, [0.0] * 6) if motion is Motion.JOINT else ([0.0] * 6, values)
+        target = Point(self.tr("target.name"), joints, cart, self.robot.tool, self.robot.frame)
+        self.held = True
+        await self.act(self.robot.move_to, target, motion, float(self.target["velocity"]), hold=not self.auto_run,
+                       quiet_stop=True)  # fmt: skip
+        self.held = False
+
+    def take_target(self) -> None:
+        s = self.snap
+        values = s.joints if self.target["motion"] == "joint" else s.cartesian
+        for f, v in zip(self.target_inputs, values, strict=True):
+            f.set_value(round(v, 3))
+
     # hold-to-run: pointerdown on a key starts, "hold_release" (browser) ends the motion
     async def jog_press(self, axis: int, direction: int) -> None:
         if not self.snap.enabled:
@@ -185,6 +295,14 @@ class Pendant:
         point = self.ws.program.point(name)
         await self.act(self.robot.move_to, point, motion, 20.0, hold=not self.auto_run, quiet_stop=True)
         self.held = False
+
+    async def step_back(self) -> None:
+        """Single step backwards: the motion step before the selected one."""
+        previous = self.ws.program.previous_motion(self.from_step)
+        self.from_step = previous
+        await self.run_program(True)
+        self.from_step = previous  # the next "back" goes one step further back
+        self.draw_steps.refresh()
 
     async def run_program(self, single_step: bool) -> None:
         steps = self.ws.program.steps
@@ -250,6 +368,9 @@ class Pendant:
         ui.on("hold_release", self.hold_release)
 
         self.build_header(dark)
+        # dialogs live here, not in the list they were opened from: a list that is redrawn (refreshable)
+        # would delete an open dialog with it (e.g. the tool list after writing, while measuring)
+        self.dialog_host = ui.element("div").classes("hidden")
         with (
             ui.left_drawer(value=True, bordered=False)
             .classes("tp-drawer")
@@ -259,7 +380,8 @@ class Pendant:
             with ui.column().classes("w-full gap-1 p-3"):
                 for key, icon in (("connection", "link"), ("jog", "open_with"),
                                   ("program", "format_list_numbered"), ("tools", "construction"),
-                                  ("frames", "grid_4x4"), ("messages", "notifications_none")):  # fmt: skip
+                                  ("frames", "grid_4x4"), ("io", "settings_input_component"),
+                                  ("system", "tune"), ("messages", "notifications_none")):  # fmt: skip
                     btn = ui.button(self.tr(f"nav.{key}"), icon=icon, on_click=lambda k=key: self.show(k))
                     btn.props("flat no-caps align=left").classes("tp-nav w-full")
                     self.nav_buttons[key] = btn
@@ -276,6 +398,10 @@ class Pendant:
                 self.coord_pages[coords.TOOL].build()
             with ui.tab_panel("frames").classes("p-0"):
                 self.coord_pages[coords.FRAME].build()
+            with ui.tab_panel("io").classes("p-0"):
+                self.io_page.build()
+            with ui.tab_panel("system").classes("p-0"):
+                self.system_page.build()
             with ui.tab_panel("messages").classes("p-0"):
                 self.build_messages()
         self.show(self.page)
@@ -290,7 +416,7 @@ class Pendant:
             btn.classes(add="active") if key == page else btn.classes(remove="active")
 
     def build_header(self, dark: Any) -> None:
-        with ui.header().classes("tp-header items-center px-4 py-2 gap-3"):
+        with ui.header().classes("tp-header items-center no-wrap px-4 py-2 gap-3"):
             ui.button(icon="menu", on_click=lambda: self.drawer.toggle()).props("flat round dense").classes(
                 "lt-md text-[var(--text)]"
             )
@@ -310,6 +436,13 @@ class Pendant:
             ui.button(icon="contrast", on_click=lambda: dark.set_value(not dark.value)).props(
                 "flat round"
             ).classes("text-[var(--text-2)]").tooltip(self.tr("theme.toggle"))
+            self.pause_btn = (
+                ui.button(self.tr("pause"), icon="pause", on_click=self.pause)
+                .classes("tp-pause")
+                .props("unelevated no-caps")
+                .tooltip(self.tr("pause.hint"))
+                .mark("pause")
+            )
             ui.button(self.tr("stop"), icon="pan_tool", on_click=self.stop).classes("tp-stop").props(
                 "unelevated no-caps"
             ).tooltip(self.tr("stop.hint"))
@@ -342,7 +475,7 @@ class Pendant:
         target = self.ws.target
         with ui.column().classes("tp-page"):
             self.page_title(self.tr("conn.title"), self.tr("conn.subtitle"))
-            with ui.element("div").classes("grid w-full gap-5 md:grid-cols-2"):
+            with ui.element("div").classes("grid w-full gap-5 items-start md:grid-cols-2"):
                 with self.card():
                     ui.toggle(
                         {False: self.tr("conn.robot"), True: self.tr("conn.simulator")},
@@ -413,6 +546,20 @@ class Pendant:
                             self.power = ui.switch(on_change=lambda e: self.set_power(bool(e.value))).props(
                                 "color=positive"
                             )
+                        with ui.element("div").classes("tp-tiles my-2"):
+                            self.tiles = {key: ui.label(self.tr(f"tile.{key}")).classes("tp-tile")
+                                          for key in ("drives", "error", "comm", "sequence")}  # fmt: skip
+                        with ui.element("div").classes("tp-row py-2"):
+                            with ui.column().classes("gap-0"):
+                                ui.label(self.tr("mode.title")).classes("text-[17px] font-medium")
+                                ui.label(self.tr("mode.hint")).classes("tp-muted")
+                            self.mode_toggle = (
+                                ui.toggle({m.name: self.tr(f"mode.{m.name}") for m in EXTERNAL_MODES}, value=None,
+                                          on_change=lambda e: self.set_mode(OperationMode[e.value]) if e.value else None)
+                                .props("no-caps unelevated")
+                                .classes("tp-seg")
+                                .mark("mode-toggle")
+                            )  # fmt: skip
                         with ui.element("div").classes("tp-row py-2"):
                             with ui.column().classes("gap-0 flex-1"):
                                 ui.label(self.tr("override")).classes("text-[17px] font-medium")
@@ -437,11 +584,42 @@ class Pendant:
                             ).props("flat no-caps").classes("tp-btn-soft").tooltip(
                                 self.tr("power.reset_hint")
                             )
+                    with self.card(self.tr("home.title")):
+                        self.draw_home()
+                        with ui.row().classes("w-full gap-2 mt-3"):
+                            self.home_btn = (
+                                ui.button(self.tr("home.move"), icon="home")
+                                .props("unelevated no-caps color=primary")
+                                .classes("tp-hold")
+                                .mark("home-move")
+                            )
+                            self.home_btn.on("pointerdown", lambda: None if self.auto_run else self.move_home())
+                            self.home_btn.on("click", lambda: self.move_home() if self.auto_run else None)
+                            ui.button(self.tr("home.save"), icon="save_as", on_click=self.save_home).props(
+                                "flat no-caps"
+                            ).classes("tp-btn-soft").mark("home-save")
                     with self.card(self.tr("caps.title")):
                         self.draw_caps()
                     with self.card(self.tr("robot.title")):
                         self.info = {k: self.info_row(self.tr(f"robot.{k}"))
                                      for k in ("manufacturer", "model", "firmware", "srci", "mode")}  # fmt: skip
+                    with self.card(self.tr("diag.title")):
+                        self.diag = {k: self.info_row(self.tr(f"diag.{k}"))
+                                     for k in ("primary", "secondary", "hours_rc", "hours_ra", "errors")}  # fmt: skip
+
+    @ui.refreshable_method
+    def draw_home(self) -> None:
+        home = self.ws.home
+        if home is None:
+            ui.label(self.tr("home.none")).classes("tp-empty w-full")
+            return
+        with ui.element("div").classes("grid grid-cols-6 gap-x-3 w-full tp-mono text-[14px]"):
+            for n, v in zip(JOINTS, home.joints, strict=True):
+                with ui.column().classes("gap-0 items-end"):
+                    ui.label(n).classes("tp-card-title")
+                    ui.label(f"{v:.1f}°")
+        ui.label(f"T{home.tool} · F{home.frame} · " + "  ".join(f"{n} {v:.1f}" for n, v in
+                 zip(CARTESIAN, home.cartesian, strict=True))).classes("tp-muted tp-mono truncate mt-1")  # fmt: skip
 
     @ui.refreshable_method
     def draw_caps(self) -> None:
@@ -476,6 +654,7 @@ class Pendant:
                     on_change=lambda e: self.set_jog_mode(e.value),
                 )
                 mode.props("no-caps unelevated").classes("tp-seg")
+                self.jog_mode_toggle = mode
             self.jog_banner = ui.row().classes("tp-banner w-full items-center justify-between")
             with self.jog_banner:
                 self.jog_banner_text = ui.label(self.tr("jog.need_enable"))
@@ -486,24 +665,11 @@ class Pendant:
                 )
             with ui.element("div").classes("grid w-full gap-5 items-start lg:grid-cols-[1.5fr_1fr]"):
                 with self.card():
-                    for i in range(6):
-                        with ui.element("div").classes("tp-axis"):
-                            self.axis_names.append(ui.label("").classes("tp-axis-name"))
-                            with ui.column().classes("gap-1"):
-                                self.axis_values.append(
-                                    ui.label("–").classes("tp-axis-val tp-mono text-left")
-                                )
-                                with ui.element("div").classes("tp-bar w-full"):
-                                    self.axis_bars.append(ui.element("div"))
-                            for direction, icon in ((-1, "remove"), (1, "add")):
-                                key = ui.button(icon=icon).props("unelevated").classes("tp-key-btn")
-                                key.on("pointerdown", lambda _, a=i, d=direction: self.jog_press(a, d))
-                                self.jog_keys.append(key)
-                    self.update_axis_names()
+                    JogPad(self).build()
                 with ui.column().classes("gap-5 w-full"):
                     with self.card(self.tr("jog.speed")):
                         with ui.row().classes("w-full items-center no-wrap gap-4"):
-                            ui.slider(
+                            self.jog_speed_slider = ui.slider(
                                 min=1,
                                 max=100,
                                 step=1,
@@ -520,12 +686,13 @@ class Pendant:
                             on_change=lambda e: self.set_increment(e.value),
                         )
                         inc.props("no-caps unelevated").classes("tp-seg")
+                        self.increment_toggle = inc
                         self.increment_unit = ui.label("").classes("tp-muted mt-1")
                     with self.card(self.tr("coord.system")):
                         with ui.row().classes("w-full gap-3 no-wrap"):
                             self.tool_select = (
                                 ui.select(
-                                    {0: "T0"},
+                                    coords.options(self, coords.TOOL),
                                     value=self.robot.tool,
                                     label=self.tr("coord.tool"),
                                     on_change=lambda e: self.select_coords(tool=e.value),
@@ -535,7 +702,7 @@ class Pendant:
                             )
                             self.frame_select = (
                                 ui.select(
-                                    {0: "F0"},
+                                    coords.options(self, coords.FRAME),
                                     value=self.robot.frame,
                                     label=self.tr("coord.frame"),
                                     on_change=lambda e: self.select_coords(frame=e.value),
@@ -552,29 +719,85 @@ class Pendant:
                     ui.button(self.tr("teach.point"), icon="add_location_alt", on_click=self.teach).props(
                         "unelevated no-caps color=primary size=lg"
                     ).classes("w-full h-16 text-[17px]")
+                    # hand guiding below the teach key (hold-to-run)
+                    self.free_btn = (
+                        ui.button(self.tr("free.button"), icon="back_hand")
+                        .props("flat no-caps")
+                        .classes("tp-free tp-hold w-full h-14 text-[16px]")
+                        .tooltip(self.tr("free.hint"))
+                        .mark("free-drive")
+                    )
+                    self.free_btn.on("pointerdown", self.free_drive)
+            with self.card(self.tr("target.title")):
+                with ui.row().classes("w-full items-center gap-3"):
+                    ui.toggle({"joint": self.tr("step.joint"), "ptp": self.tr("step.ptp"), "linear": self.tr("step.linear")},
+                              value="joint", on_change=lambda: self.update_target_names()).bind_value(
+                        self.target, "motion").props("no-caps unelevated").classes("tp-seg")  # fmt: skip
+                    ui.label(self.tr("target.hint")).classes("tp-muted flex-1")
+                with ui.element("div").classes("grid grid-cols-3 md:grid-cols-6 gap-3 w-full mt-3"):
+                    self.target_inputs = [ui.number(n, value=0.0, format="%.3f").props("filled dense")
+                                          .classes("tp-mono-in") for n in JOINTS]  # fmt: skip
+                with ui.row().classes("w-full items-center gap-3 mt-3"):
+                    ui.button(self.tr("target.take"), icon="my_location", on_click=self.take_target).props(
+                        "flat no-caps"
+                    ).classes("tp-btn-soft")
+                    ui.label(self.tr("step.vel")).classes("tp-muted ml-2")
+                    ui.slider(min=1, max=100, step=1, value=10).bind_value(self.target, "velocity").classes("w-40")
+                    ui.label().bind_text_from(self.target, "velocity", lambda v: f"{v:.0f} %").classes("tp-mono w-12")
+                    ui.space()
+                    self.target_btn = (
+                        ui.button(self.tr("target.move"), icon="near_me")
+                        .props("unelevated no-caps color=primary")
+                        .classes("tp-hold px-6")
+                        .mark("target-move")
+                    )
+                    self.target_btn.on("pointerdown", lambda: None if self.auto_run else self.move_target())
+                    self.target_btn.on("click", lambda: self.move_target() if self.auto_run else None)
+            self.update_target_names()
             self.update_increment_unit()
 
+    def update_target_names(self) -> None:
+        joint = self.target["motion"] == "joint"
+        for i, f in enumerate(self.target_inputs):
+            name = (JOINTS if joint else CARTESIAN)[i]
+            unit = "°" if joint or i >= 3 else "mm"
+            f.props(f'label="{name}" suffix="{unit}"')
+
     async def select_coords(self, tool: int | None = None, frame: int | None = None) -> None:
-        tool = self.robot.tool if tool is None else int(tool)
-        frame = self.robot.frame if frame is None else int(frame)
-        if (tool, frame) != (self.robot.tool, self.robot.frame):
-            await self.act(self.robot.set_coordinate_system, tool, frame)
-            self.ws.coord_revision += 1
+        # one after the other: a frame chosen right after a tool must not undo the tool
+        async with self.coord_lock:
+            tool = self.robot.tool if tool is None else int(tool)
+            frame = self.robot.frame if frame is None else int(frame)
+            if (tool, frame) != (self.robot.tool, self.robot.frame):
+                await self.act(self.robot.set_coordinate_system, tool, frame)
+                self.ws.coord_revision += 1
 
     def set_jog_mode(self, mode: str) -> None:
         self.jog_mode = mode
         self.remember("jog_mode", mode)
-        self.update_axis_names()
-        self.update_increment_unit()
+        self.sync_jog()
 
     def set_jog_speed(self, v: float) -> None:
         self.jog_speed = float(v)
         self.remember("jog_speed", self.jog_speed)
-        self.jog_speed_label.set_text(f"{self.jog_speed:.0f} %")
+        self.sync_jog()
 
     def set_increment(self, v: str) -> None:
         self.increment = v
         self.remember("increment", v)
+        self.sync_jog()
+
+    def sync_jog(self) -> None:
+        """Mode, speed and increment on the jog page and on every jog pad (also in dialogs)."""
+        pairs: tuple[tuple[Any, Any], ...] = ((self.jog_mode_toggle, self.jog_mode),
+                                              (self.jog_speed_slider, self.jog_speed),
+                                              (self.increment_toggle, self.increment))  # fmt: skip
+        for control, value in pairs:
+            if control.value != value:
+                control.set_value(value)
+        self.jog_speed_label.set_text(f"{self.jog_speed:.0f} %")
+        for pad in self.jog_pads:
+            pad.sync()
         self.update_increment_unit()
 
     def update_increment_unit(self) -> None:
@@ -585,11 +808,6 @@ class Pendant:
         else:
             text = f"{self.increment} mm / {self.increment} °"
         self.increment_unit.set_text(text)
-
-    def update_axis_names(self) -> None:
-        names = JOINTS if self.jog_mode == "axes" else CARTESIAN
-        for label, name in zip(self.axis_names, names, strict=True):
-            label.set_text(name)
 
     # ------------------------------------------------------------------ program
 
@@ -618,7 +836,40 @@ class Pendant:
             with ui.element("div").classes("grid w-full gap-5 items-start lg:grid-cols-2"):
                 with self.card(self.tr("prog.points")):
                     self.draw_points()
-                with self.card(self.tr("prog.steps")):
+                with self.card():
+                    with ui.row().classes("w-full items-center justify-between no-wrap"):
+                        ui.label(self.tr("prog.steps")).classes("tp-card-title")
+                        with ui.row().classes("items-center gap-1 no-wrap"):
+                            ui.button(icon="tune", on_click=self.path_settings).props("flat round dense").classes(
+                                "text-[var(--blue)]"
+                            ).tooltip(self.tr("path.title")).mark("path-settings")
+                            with ui.button(self.tr("step.add"), icon="add").props("flat no-caps dense").classes(
+                                "tp-btn-soft px-3"
+                            ).mark("add-step"):
+                                with ui.menu().props("auto-close").classes("min-w-[240px]"):
+                                    for kind in StepKind:
+                                        with ui.menu_item(on_click=lambda k=kind: self.add_kind(k)).mark(f"add-{kind.value}"):
+                                            with ui.row().classes("items-center gap-3 no-wrap"):
+                                                ui.icon(KIND_ICONS[kind]).classes("text-[var(--blue)]")
+                                                ui.label(self.tr(f"kind.{kind.value}")).classes("whitespace-nowrap")
+                    self.run_status = ui.row().classes("tp-run w-full items-center gap-3 no-wrap")
+                    with self.run_status:
+                        self.run_text = ui.label("").classes("flex-1 font-medium")
+                        self.return_btn = (
+                            ui.button(self.tr("return.button"), icon="u_turn_left")
+                            .props("flat no-caps dense")
+                            .classes("tp-btn-soft tp-hold px-3")
+                            .mark("return-primary")
+                        )
+                        self.return_btn.on("pointerdown", lambda: None if self.auto_run else self.return_to_path())
+                        self.return_btn.on("click", lambda: self.return_to_path() if self.auto_run else None)
+                        self.continue_btn = (
+                            ui.button(self.tr("continue"), icon="play_arrow", on_click=self.pause)
+                            .props("unelevated no-caps dense color=positive")
+                            .classes("px-3")
+                            .mark("continue")
+                        )
+                    self.progress = ui.linear_progress(value=0, show_value=False, size="6px").classes("tp-progress")
                     self.draw_steps()
                     with ui.column().classes("w-full gap-3 mt-4 pt-4 border-t border-[var(--line)]"):
                         with ui.row().classes("w-full items-center gap-3 no-wrap"):
@@ -636,6 +887,15 @@ class Pendant:
                             )
                             self.step_btn.on("pointerdown", lambda: self.run_if_hold(True))
                             self.step_btn.on("click", lambda: self.run_if_auto(True))
+                            self.back_btn = (
+                                ui.button(icon="skip_previous")
+                                .props("flat size=lg")
+                                .classes("tp-btn-soft tp-hold h-14")
+                                .tooltip(self.tr("prog.back"))
+                                .mark("step-back")
+                            )
+                            self.back_btn.on("pointerdown", lambda: None if self.auto_run else self.step_back())
+                            self.back_btn.on("click", lambda: self.step_back() if self.auto_run else None)
                         self.run_hint = ui.label(self.tr("prog.hold_hint")).classes("tp-muted")
                         with ui.row().classes("items-center gap-2"):
                             ui.switch(
@@ -655,7 +915,7 @@ class Pendant:
 
     def set_auto(self, auto: bool) -> None:
         self.auto_run = auto
-        for btn in (self.start_btn, self.step_btn):
+        for btn in (self.start_btn, self.step_btn, self.back_btn, self.home_btn, self.target_btn, self.return_btn):
             btn.classes(remove="tp-hold") if auto else btn.classes(add="tp-hold")
         self.run_hint.set_text(self.tr("prog.auto_hint") if auto else self.tr("prog.hold_hint"))
 
@@ -696,6 +956,13 @@ class Pendant:
                             self.tr("teach.again"), on_click=lambda n=point.name: self.teach_again(n)
                         )
                         ui.menu_item(
+                            self.tr("point.edit"), on_click=lambda n=point.name: points.edit_point(self, n)
+                        ).mark(f"edit-point-{point.name}")
+                        if self.snap.can("ShiftPosition"):
+                            ui.menu_item(
+                                self.tr("point.shift"), on_click=lambda n=point.name: points.shift_point(self, n)
+                            ).mark(f"shift-point-{point.name}")
+                        ui.menu_item(
                             self.tr("point.rename"), on_click=lambda n=point.name: self.rename_dialog(n)
                         )
                         ui.menu_item(
@@ -711,7 +978,8 @@ class Pendant:
         running = self.snap.activity is Activity.RUNNING
         for i, step in enumerate(program.steps):
             current = i == (self.snap.program_step if running else self.from_step)
-            with ui.element("div").classes("tp-item" + (" current" if current else "")):
+            classes = "tp-item" + (" current" if current else "") + ("" if step.enabled else " skipped")
+            with ui.element("div").classes(classes):
                 badge = ui.label(str(i + 1)).classes("tp-badge cursor-pointer")
                 badge.on("click", lambda _, n=i: self.set_from_step(n))
                 with (
@@ -720,25 +988,37 @@ class Pendant:
                     .on("click", lambda _, n=i: self.edit_step(n))
                     .mark(f"step-{i}")
                 ):
-                    ui.label(step.point).classes("font-semibold min-w-0 truncate")
+                    if step.kind is not StepKind.MOVE:
+                        ui.icon(KIND_ICONS[step.kind]).classes("text-[var(--text-2)] text-[20px]")
+                    with ui.column().classes("gap-0 min-w-0"):
+                        ui.label(step_title(self, step)).classes("font-semibold min-w-0 truncate")
+                        if step.note:
+                            ui.label(step.note).classes("tp-muted truncate")
                     ui.space()
-                    kind = {Motion.LINEAR: "lin", Motion.PTP: "ptp", Motion.JOINT: "joint"}[step.motion]
-                    chip = ui.label(motion_label(self, step)).classes(f"tp-chip {kind}")
-                    if not self.snap.can(MOTION_FUNCTIONS[step.motion.value]):
-                        chip.classes("unsupported").tooltip(
-                            self.tr("caps.not_supported", f=MOTION_FUNCTIONS[step.motion.value])
+                    function = step_function(step)
+                    if step.is_motion:
+                        kind = {Motion.LINEAR: "lin", Motion.PTP: "ptp", Motion.JOINT: "joint",
+                                Motion.CIRC: "circ"}[step.motion]  # fmt: skip
+                        chip = ui.label(motion_label(self, step)).classes(f"tp-chip {kind}")
+                        refused = step.blended and self.robot.blending_results.get(step.blending_mode) is False
+                        blend = ui.label(blend_label(self, step)).classes(
+                            "tp-chip" + (" blend" if step.blended else "") + (" unsupported" if refused else "")
                         )
-                    refused = step.blended and self.robot.blending_results.get(step.blending_mode) is False
-                    blend = ui.label(blend_label(self, step)).classes(
-                        "tp-chip" + (" blend" if step.blended else "") + (" unsupported" if refused else "")
-                    )
-                    if refused:
-                        blend.tooltip(self.tr("blend.rejected"))
-                    vel = self.tr("step.default") if step.velocity < 0 else f"{step.velocity:.0f} %"
-                    ui.label(vel).classes("tp-mono tp-muted w-16 text-right")
+                        if refused:
+                            blend.tooltip(self.tr("blend.rejected"))
+                        vel = self.tr("step.default") if step.velocity < 0 else f"{step.velocity:.0f} %"
+                        ui.label(vel).classes("tp-mono tp-muted w-16 text-right")
+                    else:
+                        chip = ui.label(self.tr(f"kind.{step.kind.value}_chip")).classes("tp-chip")
+                    if function is not None and not self.snap.can(function):
+                        chip.classes("unsupported").tooltip(self.tr("caps.not_supported", f=function))
                 with ui.button(icon="more_vert").props("flat round dense").classes("text-[var(--text-2)]"):
                     with ui.menu():
                         ui.menu_item(self.tr("coord.edit"), on_click=lambda n=i: self.edit_step(n))
+                        ui.menu_item(
+                            self.tr("step.skip" if step.enabled else "step.unskip"),
+                            on_click=lambda n=i: self.toggle_step(n),
+                        ).mark(f"skip-{i}")
                         ui.menu_item(self.tr("step.duplicate"), on_click=lambda n=i: self.duplicate_step(n))
                         ui.menu_item(self.tr("step.up"), on_click=lambda n=i: self.move_step(n, -1))
                         ui.menu_item(self.tr("step.down"), on_click=lambda n=i: self.move_step(n, 1))
@@ -751,6 +1031,31 @@ class Pendant:
     def add_step(self, name: str) -> None:
         self.ws.program.add_step(name)
         self.ws.changed()
+
+    async def add_kind(self, kind: StepKind) -> None:
+        if kind is StepKind.MOVE and not self.ws.program.points:
+            ui.notify(self.tr("prog.no_points"), type="warning", position="top")
+            return
+        try:
+            step = await edit_step(self, None, new_step(self, kind))
+        except ValueError as exc:
+            ui.notify(str(exc), type="negative", position="top")
+            return
+        if step is not None:
+            steps = self.ws.program.steps
+            index = min(self.from_step + 1, len(steps)) if steps else 0
+            self.ws.program.insert_step(step, index)
+            self.from_step = index
+            self.ws.changed()
+
+    def toggle_step(self, i: int) -> None:
+        step = self.ws.program.steps[i]
+        step.enabled = not step.enabled
+        self.ws.changed()
+
+    async def path_settings(self) -> None:
+        if await path_settings(self):
+            self.ws.changed()
 
     async def edit_step(self, i: int) -> None:
         try:
@@ -778,7 +1083,7 @@ class Pendant:
         self.ws.changed()
 
     async def rename_dialog(self, name: str) -> None:
-        with ui.dialog() as dialog, ui.card().classes("min-w-[320px]"):
+        with self.dialog() as dialog, ui.card().classes("min-w-[320px]"):
             ui.label(self.tr("point.rename")).classes("text-[17px] font-semibold")
             field_ = ui.input(self.tr("common.name"), value=name).props("filled autofocus").classes("w-full")
             with ui.row().classes("w-full justify-end gap-2"):
@@ -807,7 +1112,7 @@ class Pendant:
         self.ws.changed()
 
     async def confirm(self, text: str, danger: bool = False) -> bool:
-        with ui.dialog() as dialog, ui.card().classes("min-w-[320px]"):
+        with self.dialog() as dialog, ui.card().classes("min-w-[320px]"):
             ui.label(text).classes("text-[17px] font-medium")
             with ui.row().classes("w-full justify-end gap-2"):
                 ui.button(self.tr("common.cancel"), on_click=lambda: dialog.submit(False)).props(
@@ -840,7 +1145,7 @@ class Pendant:
 
     async def open_dialog(self) -> None:
         files = self.ws.files()
-        with ui.dialog() as dialog, ui.card().classes("min-w-[360px]"):
+        with self.dialog() as dialog, ui.card().classes("min-w-[360px]"):
             ui.label(self.tr("prog.open")).classes("text-[17px] font-semibold")
             if not files:
                 ui.label("–").classes("tp-empty w-full")
@@ -898,7 +1203,11 @@ class Pendant:
 
     def build_messages(self) -> None:
         with ui.column().classes("tp-page"):
-            self.page_title(self.tr("msg.title"))
+            with ui.row().classes("w-full items-end justify-between gap-3"):
+                self.page_title(self.tr("msg.title"))
+                ui.button(self.tr("power.reset"), icon="restart_alt", on_click=lambda: self.act(self.robot.reset)).props(
+                    "flat no-caps"
+                ).classes("tp-btn-soft").tooltip(self.tr("power.reset_hint"))
             self.last_error = ui.label("").classes("tp-banner err w-full")
             with self.card():
                 self.draw_messages()
@@ -922,6 +1231,9 @@ class Pendant:
                 with ui.column().classes("gap-0 flex-1 min-w-0"):
                     ui.label(m.text or "–").classes("font-medium")
                     ui.label(f"{m.severity} · 16#{m.code:04X}").classes("tp-muted tp-mono")
+                seen = self.ws.seen_messages.get((m.code, m.text))
+                if seen is not None:
+                    ui.label(time.strftime("%d.%m. %H:%M:%S", time.localtime(seen))).classes("tp-muted tp-mono")
 
     # ------------------------------------------------------------------ cyclic update
 
@@ -939,6 +1251,10 @@ class Pendant:
                 kind = "busy"
         elif s.error_pending:
             text, kind = self.tr("state.error"), "err"
+        elif s.halted:
+            text, kind = self.tr("state.halted"), "warn"
+        elif s.interrupted and s.activity in (Activity.RUNNING, Activity.MOVING):
+            text, kind = self.tr("state.interrupted"), "warn"
         elif s.activity is not Activity.IDLE:
             text, kind = self.tr(f"activity.{s.activity.value}"), "busy"
         else:
@@ -967,6 +1283,41 @@ class Pendant:
         if self.power.value != s.enabled:
             self.power.set_value(s.enabled)  # set_power() ignores it (no change)
         self.override.set_enabled(ready and s.can("ChangeSpeedOverride"))
+        self.mode_toggle.set_enabled(ready and s.can("SetOperationMode"))
+        if self.mode_toggle.value != (s.operation_mode if s.operation_mode in OperationMode.__members__ else None):
+            mode = s.operation_mode if ready and s.operation_mode in {m.name for m in EXTERNAL_MODES} else None
+            if self.mode_toggle.value != mode:
+                self.mode_toggle.set_value(mode)
+        tiles = {
+            "drives": "ok" if s.enabled else ("" if ready else "off"),
+            "error": "err" if s.error_pending else ("ok" if ready else "off"),
+            "comm": "ok" if ready else ("err" if s.phase in (Phase.LOST, Phase.FAILED) else "off"),
+            "sequence": "warn" if s.secondary or s.interrupted else ("ok" if ready else "off"),
+        }
+        for key, state in tiles.items():
+            self.put(self.tiles[key], "classes", f"tp-tile {state}")
+        self.tiles["error"].set_text(self.tr("tile.error_on" if s.error_pending else "tile.error"))
+        self.tiles["sequence"].set_text(self.tr("tile.secondary" if s.secondary else
+                                                "tile.interrupted" if s.interrupted else "tile.sequence"))  # fmt: skip
+        busy_move = s.activity in (Activity.RUNNING, Activity.MOVING)
+        show_pause = ready and (busy_move or s.interrupted or s.halted)
+        self.pause_btn.set_visibility(show_pause)
+        paused = s.interrupted or s.halted
+        self.pause_btn.set_text(self.tr("continue" if paused else "pause"))
+        self.pause_btn.props(f'icon={"play_arrow" if paused else "pause"}')
+        # not via put(): replacing the classes would also remove the "hidden" of set_visibility
+        self.pause_btn.classes(add="go") if paused else self.pause_btn.classes(remove="go")
+        self.home_btn.set_enabled(ready and s.enabled and self.ws.home is not None and (not busy_move or self.held))
+        self.target_btn.set_enabled(ready and s.enabled and (not busy_move or self.held))
+        self.free_btn.set_visibility(s.can("FreeDrive"))
+        self.free_btn.set_enabled(ready and s.enabled)
+        hours = s.working_hours
+        errors = [f"16#{m.code:04X}" for m in s.messages if "ERROR" in m.severity][:5]
+        for key, value in (("primary", self.tr("common.yes" if s.in_primary_pos else "common.no")),
+                           ("secondary", self.tr("common.yes" if s.secondary else "common.no")),
+                           ("hours_rc", f"{hours[0]} h"), ("hours_ra", f"{hours[1]} h"),
+                           ("errors", "  ".join(errors) or "–")):  # fmt: skip
+            self.diag[key].set_text(value if ready else "–")
         for key, value in (("manufacturer", s.manufacturer), ("model", s.robot), ("firmware", s.firmware),
                            ("srci", s.srci_version), ("mode", s.operation_mode if ready else "")):  # fmt: skip
             self.info[key].set_text(value or "–")
@@ -975,17 +1326,9 @@ class Pendant:
         self.jog_banner.set_visibility(ready and (not s.enabled or not jog_supported))
         self.jog_banner_text.set_text(self.tr("jog.need_enable" if jog_supported else "jog.unsupported"))
         self.jog_banner_btn.set_visibility(jog_supported)
-        can_jog = ready and s.enabled and jog_supported and s.activity in (Activity.IDLE, Activity.JOGGING)
-        for jog_key in self.jog_keys:
-            self.put(jog_key, "classes", "tp-key-btn" if can_jog else "tp-key-btn disabled")
+        for pad in list(self.jog_pads):
+            pad.update(s)
         axes = self.jog_mode == "axes"
-        values = s.joints if axes else s.cartesian
-        for i, (label, bar) in enumerate(zip(self.axis_values, self.axis_bars, strict=True)):
-            v = values[i]
-            label.set_text(_fmt(v) if s.position_valid else "–")
-            span = JOINT_RANGE if axes else CART_RANGES[i] * 2
-            w = min(50.0, abs(v) / span * 100.0)
-            self.put(bar, "style", f"left: {50.0 - w if v < 0 else 50.0:.1f}%; width: {w:.1f}%")
         other = s.cartesian if axes else s.joints
         names = CARTESIAN if axes else JOINTS
         self.other_title.set_text(self.tr("pos.tcp" if axes else "pos.joints"))
@@ -1010,9 +1353,21 @@ class Pendant:
             self.draw_steps.refresh()
         self.dirty_label.set_visibility(self.ws.dirty)
         busy = s.activity in (Activity.RUNNING, Activity.MOVING)
-        for btn in (self.start_btn, self.step_btn):
+        for btn in (self.start_btn, self.step_btn, self.back_btn):
             # stays enabled while it is held: disabling it would end the pointer capture -> release
             btn.set_enabled(ready and s.enabled and bool(self.ws.program.steps) and (not busy or self.held))
+        running = s.activity is Activity.RUNNING
+        steps = self.ws.program.steps
+        self.run_status.set_visibility(running or s.halted)
+        self.progress.set_visibility(running and s.progress >= 0)
+        if running and 0 <= s.program_step < len(steps):
+            step = steps[s.program_step]
+            state = (self.tr("state.halted") if s.halted else self.tr("state.interrupted") if s.interrupted
+                     else self.tr("activity.running"))  # fmt: skip
+            self.run_text.set_text(f"{state} · {self.tr('step.title', n=s.program_step + 1)} · {step_title(self, step)}")
+            self.progress.set_value(max(0.0, min(1.0, s.progress / 100.0)))
+        self.return_btn.set_visibility(s.interrupted and (s.secondary or not s.in_primary_pos) and s.can("ReturnToPrimary"))
+        self.continue_btn.set_visibility(s.interrupted or s.halted)
         # tools and frames
         coord_key = (self.ws.coord_revision, s.tool, s.frame, s.highest_tool, s.highest_frame, s.supported)
         if coord_key != self.seen_coords:
@@ -1023,7 +1378,15 @@ class Pendant:
             self.frame_select.set_options(coords.options(self, coords.FRAME), value=s.frame)
         for page in self.coord_pages.values():
             page.read_btn.set_enabled(ready and s.activity is Activity.IDLE and page.can_read)
+        # I/O and system pages: only while shown
+        if self.page == "io":
+            self.io_page.tick()
+        elif self.page == "system":
+            self.system_page.tick()
         # messages
+        now = time.time()
+        for m in s.messages:
+            self.ws.seen_messages.setdefault((m.code, m.text), now)
         if [m.code for m in s.messages] != [m.code for m in old.messages] or len(s.messages) != len(
             old.messages
         ):
