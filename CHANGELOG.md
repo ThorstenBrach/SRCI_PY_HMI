@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Added
- - Functions of the SIMATIC Robot Library / Robot Integrator in the own design:
+ - Functions of a robot library / robot integrator in the own design:
    - pause / continue (GroupInterrupt, GroupContinue) next to STOP, "return to path"
      (ReturnToPrimary) after jogging away; jog and hand guiding also while a program is paused
    - external operation mode Automatic / T1 / T2 (SetOperationMode), status tiles, home position
@@ -56,6 +56,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
  - Tests: model, robot service and UI (simulated browser) against the SDK simulator
 
 ### Changed
+ - SDK simulator from the private SDK package `srci_sdk_sim` (moved out of the client `srci.sim.sdk`):
+   `pip install -e "..\SRCI SDK\srci_py_harness\python" --no-deps` for `--simulator` and the tests
  - README and operating manual (docs/OPERATING_MANUAL.md) in English, screenshots of the English user interface
  - Renamed from SRCI Teach to SRCI_PY_HMI: distribution `srci-py-hmi`, package `srci_py_hmi`,
    command `srci-hmi`. The key file of the stored settings is taken over

@@ -64,7 +64,7 @@ pip install -e .[dev]
 srci-hmi                                     :: http://127.0.0.1:8080, gateway 192.168.2.10:5000
 srci-hmi --robot 192.168.2.10 --robot-port 5000 --length 256
 srci-hmi --lifesign 500                      :: LifeSign timeout [ms] (else the one set last)
-srci-hmi --simulator                         :: SDK simulator preselected (SRCI_SDK_SIM_LIB)
+srci-hmi --simulator                         :: SDK simulator preselected (private package srci_sdk_sim)
 srci-hmi --log hmi.log                       :: log file with the system log of all function blocks
 srci-hmi --host 0.0.0.0 --port 8080          :: reachable from a tablet (see Safety)
 srci-hmi --native                            :: own window instead of the browser (pywebview)
@@ -133,11 +133,13 @@ guiding), moved back to the interrupted path with **Return to path**, and the pr
 ## Tests
 
 ```bat
-pytest            :: model and geometry; robot service and UI against the SDK simulator if SRCI_SDK_SIM_LIB is set
+pytest            :: model and geometry; robot service and UI against the SDK simulator if srci_sdk_sim is installed
 ruff check . && mypy
 ```
 
-The SRCI SDK is licensed and does not belong in this repository (see `.gitignore`).
+The SRCI SDK is licensed and does not belong in this repository (see `.gitignore`). Its Python
+package `srci_sdk_sim` (simulator for `--simulator` and the tests) is installed from the private SDK:
+`pip install -e "..\SRCI SDK\srci_py_harness\python" --no-deps`.
 
 ## JAKA MiniCobo
 

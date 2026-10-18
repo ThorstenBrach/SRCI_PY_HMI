@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("nicegui")
-sdk = pytest.importorskip("srci.sim.sdk")
+sdk = pytest.importorskip("srci_sdk_sim.sdk")  # private SRCI SDK package
 try:
     sdk.SdkSimulator().close()
 except sdk.SdkNotAvailableError as exc:  # pragma: no cover - depends on the machine

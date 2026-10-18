@@ -1,7 +1,7 @@
 """The robot service against the SRCI SDK simulator (skipped without the SDK library).
 
 The SDK is licensed and not part of this repository: build it in ``SRCI SDK/srci_py_harness``
-and set ``SRCI_SDK_SIM_LIB`` (see SRCI_PY).
+and install its Python package ``pip install -e "<SRCI SDK>/srci_py_harness/python"``.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from srci.types import JogMode
 from srci_py_hmi.model import Motion, Program
 from srci_py_hmi.robot import Activity, Phase, RobotService, Target
 
-sdk = pytest.importorskip("srci.sim.sdk")
+sdk = pytest.importorskip("srci_sdk_sim.sdk")  # private SRCI SDK package
 try:
     sdk.SdkSimulator().close()
 except sdk.SdkNotAvailableError as exc:  # pragma: no cover - depends on the machine

@@ -173,7 +173,7 @@ class Target:
     host: str = "192.168.2.10"
     port: int = 5000
     length: int = 256  # telegram length per direction = size of the PROFINET module
-    simulator: bool = False  # SRCI SDK simulator behind a local gateway (needs SRCI_SDK_SIM_LIB)
+    simulator: bool = False  # SRCI SDK simulator behind a local gateway (private package srci_sdk_sim)
     # LifeSign timeout [ms]: 50 is the spec default; the JAKA MiniCobo needs >= 300 (no LifeSign for
     # ~200 ms while it switches the drives off after a rejected command)
     lifesign_ms: int = 500
@@ -433,7 +433,14 @@ class RobotService:
         n = target.length
         if target.simulator:
             from srci.sim.gateway import PlcGatewaySimulator
-            from srci.sim.sdk import SdkSimulator
+
+            try:
+                # part of the private SRCI SDK (srci_py_harness/python), not of the client
+                from srci_sdk_sim.sdk import SdkSimulator
+            except ImportError as exc:
+                raise RuntimeError(
+                    "SDK simulator not installed: pip install -e <SRCI SDK>/srci_py_harness/python"
+                ) from exc
 
             sim = self._stack.enter_context(SdkSimulator())
             sim.set_move_cycles(100)  # simulated motions take about 1 s
