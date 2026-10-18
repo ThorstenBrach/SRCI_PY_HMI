@@ -123,7 +123,7 @@ Entspricht dem heutigen `Snapshot` in `robot.py`.
 Werkzeuge, Frames, Lasten, Grundstellung, Punkte und Programme liegen **im Integrator**
 (SPS: Struktur-Arrays fester Größe; Python: dieselben Strukturen). Die HMI liest und schreibt sie
 über die Schnittstelle. Größen (max. Punkte, Schritte, Programme) sind Konstanten des Integrators,
-wie die Anwenderkonstanten des SIMATIC Robot Integrator.
+wie Anwenderkonstanten in einer Robot-Library.
 
 ### 5.5 Sonstiges
 

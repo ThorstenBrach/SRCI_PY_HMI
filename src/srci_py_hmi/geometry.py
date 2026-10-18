@@ -2,7 +2,7 @@
 CalculateFrame (profile Extended), e.g. the JAKA MiniCobo (profile Core only).
 
 Positions are X, Y, Z [mm], Rx, Ry, Rz [deg] as in SRCI: extrinsic x-y-z rotations (= intrinsic
-z-y'-x''), R = Rz(Rz) * Ry(Ry) * Rx(Rx) (SIMATIC Robot Library manual 4.2, ISO 9787).
+z-y'-x''), R = Rz(Rz) * Ry(Ry) * Rx(Rx) (robot library manual 4.2, ISO 9787).
 Pure Python (3x3 matrices), no further dependency.
 """
 

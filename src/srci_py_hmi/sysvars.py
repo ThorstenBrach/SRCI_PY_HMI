@@ -1,5 +1,5 @@
 """System variables of the RC (Read/WriteSystemVariable): the standardized parameter list of the
-specification (SIMATIC Robot Library manual, chapter 7.3) and the conversion of the 4-byte values.
+specification (robot library manual, chapter 7.3) and the conversion of the 4-byte values.
 
 Every (sub-)parameter is transferred in 4 bytes, its type is a DataType ID (manual table 6-72).
 The bytes are interpreted little endian - the way a PLC copies them into its variables.
