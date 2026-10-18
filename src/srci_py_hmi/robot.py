@@ -167,7 +167,7 @@ class Activity(StrEnum):
 
 
 TCP = "tcp"  # PLC gateway (TCP/IP), PLC <-> robot over PROFINET
-OPCUA = "opcua"  # OPC UA server of the robot controller (no PLC)
+OPCUA = "opcua"  # OPC UA server (PLC bridge or robot controller)
 SIMULATOR = "sim"  # SRCI SDK simulator on this computer
 
 

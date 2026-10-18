@@ -7,11 +7,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ## [Unreleased]
 
 ### Added
- - Connection over **OPC UA** (robot controller with its own OPC UA server, no PLC): endpoint,
+ - Connection over **OPC UA** (PLC bridge or robot controller with OPC UA server): endpoint,
    optional user / password, the two telegram nodes; configurator "Browse server" lists the
    variables of the server and takes the nodes and the telegram length; settings (without the
    password) are remembered; `--opcua`, `--opcua-out`, `--opcua-in`, `--opcua-user`. Needs
-   `srci-client[opcua]`. Tested against a local OPC UA server, not yet on a robot
+   `srci-client[opcua]`. Tested with a JAKA MiniCobo behind a TwinCAT PLC bridge with OPC UA
+   server (Byte[256], LifeSign timeout 500 ms, no timeouts)
  - Functions of a robot library / robot integrator in the own design:
    - pause / continue (GroupInterrupt, GroupContinue) next to STOP, "return to path"
      (ReturnToPrimary) after jogging away; jog and hand guiding also while a program is paused

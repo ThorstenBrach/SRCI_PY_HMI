@@ -50,10 +50,10 @@ TEXTS: dict[str, dict[str, str]] = {
     "opcua.in": {"de": "Knoten Telegramm RC → SPS (lesen)", "en": "Node telegram RC → PLC (read)"},
     "opcua.browse": {"de": "Server durchsuchen", "en": "Browse server"},
     "opcua.hint": {
-        "de": "Die Robotersteuerung stellt die SRCI-Telegramme als ByteString oder Zahlen-Array bereit. "
-              "Schreiben braucht meist einen angemeldeten Benutzer. Noch nicht am Roboter getestet.",
-        "en": "The robot controller offers the SRCI telegrams as ByteString or number array. "
-              "Writing usually needs a logged-in user. Not yet tested on a robot.",
+        "de": "SPS-Bridge oder Robotersteuerung stellen die SRCI-Telegramme als ByteString oder Zahlen-Array bereit. "
+              "Schreiben braucht ggf. einen angemeldeten Benutzer.",
+        "en": "The PLC bridge or robot controller offers the SRCI telegrams as ByteString or number array. "
+              "Writing may need a logged-in user.",
     },
     "opcua.browse_failed": {"de": "Server nicht erreichbar", "en": "Server not reachable"},
     "opcua.browse_title": {"de": "Variablen von {endpoint}", "en": "Variables of {endpoint}"},
