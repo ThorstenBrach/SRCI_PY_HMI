@@ -13,6 +13,7 @@ through the PLC gateway, switches it on, jogs it, teaches points and runs progra
 
 ```
 Browser / tablet  --HTTP-->  srci-hmi (Python, NiceGUI)  --TCP-->  PLC gateway  --PROFINET-->  robot
+                                     ├─ or: --OPC UA-->  OPC UA server of the robot controller (no PLC)
                                      └─ or: SRCI SDK simulator (local, without a robot)
 ```
 
@@ -22,7 +23,7 @@ Browser / tablet  --HTTP-->  srci-hmi (Python, NiceGUI)  --TCP-->  PLC gateway  
 
 | Page | Content |
 |---|---|
-| **Connection** | Robot (IP / port / telegram length of the gateway) or SDK simulator, LifeSign timeout (100 / 250 / 500 / 1000 ms or free, remembered), robot on / off (acknowledges pending errors with GroupReset first), reset, speed override, robot data and **capabilities**: the functions the controller reports in `RCSupportedFunctions`. Functions it does not report are disabled in the user interface and never sent. Status tiles (drives, error, communication, sequence), external **operation mode** Automatic / T1 / T2 (SetOperationMode), **home position** (set, move to), **diagnostics** (on the path, secondary sequence, operating hours, last error IDs) |
+| **Connection** | PLC gateway (IP / port / telegram length), **OPC UA** (endpoint, optional user / password, the two telegram nodes - picked with the built-in **configurator** "Browse server"; not yet tested on a robot) or SDK simulator, LifeSign timeout (100 / 250 / 500 / 1000 ms or free, remembered), robot on / off (acknowledges pending errors with GroupReset first), reset, speed override, robot data and **capabilities**: the functions the controller reports in `RCSupportedFunctions`. Functions it does not report are disabled in the user interface and never sent. Status tiles (drives, error, communication, sequence), external **operation mode** Automatic / T1 / T2 (SetOperationMode), **home position** (set, move to), **diagnostics** (on the path, secondary sequence, operating hours, last error IDs) |
 | **Jog** | Jogging in joints, base or tool, continuous or in increments (0.1 / 1 / 10), jog speed. Choice of tool and frame; they are used for the TCP display, Cartesian jogging and teaching (a point remembers its tool and frame). Live position, "Teach point", **hand guiding** (FreeDrive, hold), **move to a target position**: enter joint or Cartesian values (Joint / PTP / LIN) |
 | **Program** | Points (move to, teach again, edit, rename, delete) and sequence. Tapping a step opens the editor: motion type **LIN** (MoveLinearAbsolute), **PTP** (MoveDirectAbsolute, Cartesian target, joint interpolated), **Joint** (MoveAxesAbsolute, joint angles) or **CIRC** through a via point (MoveCircularAbsolute), each with exact stop or blending (modes of the spec, value before and – for "two radii" – after the point; modes the robot refused in this connection are marked), plus velocity, acceleration, deceleration and jerk in % or the default of the RC. Further step kinds: **relative** motion (MoveLinear/Direct/AxesRelative, in the tool or the frame), **wait**, **set output** (WriteDigitalOutputs), **wait for input** (ReadDigitalInputs, with timeout), **subprogram** (CallSubprogram) and **stop point**. Steps can be skipped and commented; **sequence settings** set blending and dynamics for all steps. Edit points numerically (with the forward / inverse kinematics of the RC) and **shift, mirror, rotate** them (ShiftPosition). Start, single step, **step back**, status line with progress, **pause / continue** and **return to path** (GroupInterrupt, GroupContinue, ReturnToPrimary), save and open as JSON |
 | **Tools** | Read the tool table of the robot controller (ReadToolData) and write single tools (WriteToolData): X, Y, Z, Rx, Ry, Rz, load no., external TCP. Local labels like "Gripper" are stored in `programs/labels.json`. T0 (flange) is fixed. **Measure** with the RC (CalculateTool: 3, 4, 5, 6 points, 2 points + Z, ABC world, ABC 2 points); the wizard has its own jog keys, the robot is moved right in the dialog. If the robot controller does not report `CalculateTool` / `CalculateFrame` (profile Core, e.g. JAKA MiniCobo), the HMI calculates itself: tool 3 / 4 points and ABC world, frame 3, 4 and 1 point. Read and write **loads** (Read/WriteLoadData: mass, center of gravity, inertia) |
@@ -56,6 +57,7 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -e ..\SRCI_PY
 pip install -e .[dev]
+pip install -e ..\SRCI_PY[opcua]           :: only for OPC UA (package asyncua)
 ```
 
 ## Start
@@ -65,6 +67,8 @@ srci-hmi                                     :: http://127.0.0.1:8080, gateway 1
 srci-hmi --robot 192.168.2.10 --robot-port 5000 --length 256
 srci-hmi --lifesign 500                      :: LifeSign timeout [ms] (else the one set last)
 srci-hmi --simulator                         :: SDK simulator preselected (private package srci_sdk_sim)
+srci-hmi --opcua opc.tcp://192.168.2.10:4840 --opcua-out "ns=2;s=SRCI.PlcToRob" --opcua-in "ns=2;s=SRCI.RobToPlc" --opcua-user default
+                                             :: OPC UA preselected (nodes also via "Browse server")
 srci-hmi --log hmi.log                       :: log file with the system log of all function blocks
 srci-hmi --host 0.0.0.0 --port 8080          :: reachable from a tablet (see Safety)
 srci-hmi --native                            :: own window instead of the browser (pywebview)
@@ -133,7 +137,7 @@ guiding), moved back to the interrupted path with **Return to path**, and the pr
 ## Tests
 
 ```bat
-pytest            :: model and geometry; robot service and UI against the SDK simulator if srci_sdk_sim is installed
+pytest            :: model and geometry; OPC UA configurator against a local OPC UA server (asyncua); robot service and UI against the SDK simulator if srci_sdk_sim is installed
 ruff check . && mypy
 ```
 

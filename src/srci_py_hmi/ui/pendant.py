@@ -19,6 +19,9 @@ from srci_py_hmi.model import CARTESIAN, JOINTS, Motion, Point, Program, StepKin
 from srci_py_hmi.robot import (
     CORE_FUNCTIONS,
     EXTERNAL_MODES,
+    OPCUA,
+    SIMULATOR,
+    TCP,
     Activity,
     CoordData,
     LoadInfo,
@@ -28,7 +31,7 @@ from srci_py_hmi.robot import (
     Target,
     step_function,
 )
-from srci_py_hmi.ui import coords, points
+from srci_py_hmi.ui import coords, opcua_config, points
 from srci_py_hmi.ui.io_page import IoPage
 from srci_py_hmi.ui.jog_pad import JogPad
 from srci_py_hmi.ui.step_editor import (
@@ -197,6 +200,8 @@ class Pendant:
         if self.snap.phase in (Phase.READY, Phase.LOST):
             await self.act(self.robot.disconnect)
         else:
+            if self.ws.target.kind == OPCUA:
+                opcua_config.save_settings(self.ws.target)
             await self.act(self.robot.connect, self.ws.target)
 
     async def set_power(self, on: bool) -> None:
@@ -478,15 +483,17 @@ class Pendant:
             with ui.element("div").classes("grid w-full gap-5 items-start md:grid-cols-2"):
                 with self.card():
                     ui.toggle(
-                        {False: self.tr("conn.robot"), True: self.tr("conn.simulator")},
-                        value=target.simulator,
-                    ).bind_value(target, "simulator").props("no-caps unelevated").classes(
+                        {TCP: self.tr("conn.robot"), OPCUA: self.tr("conn.opcua"), SIMULATOR: self.tr("conn.simulator")},
+                        value=target.kind,
+                    ).bind_value(target, "kind").props("no-caps unelevated").classes(
                         "tp-seg self-start mb-4"
-                    )
+                    ).mark("conn-kind")
+                    with ui.column().classes("w-full gap-3").bind_visibility_from(target, "kind", lambda v: v == OPCUA):
+                        opcua_config.build_fields(self, target)
                     with (
                         ui.column()
                         .classes("w-full gap-3")
-                        .bind_visibility_from(target, "simulator", lambda v: not v)
+                        .bind_visibility_from(target, "kind", lambda v: v == TCP)
                     ):
                         ui.input(self.tr("conn.host")).bind_value(target, "host").props("filled").classes(
                             "w-full"

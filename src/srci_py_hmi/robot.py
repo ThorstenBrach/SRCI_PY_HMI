@@ -88,7 +88,7 @@ from srci.fb import (
     MC_WriteToolDataFB,
 )
 from srci.logging_bridge import PythonLogger
-from srci.transport import TcpTransport
+from srci.transport import OpcUaTransport, TcpTransport
 from srci.transport.base import Transport
 from srci.types import (
     ArmConfigElbow,
@@ -166,6 +166,11 @@ class Activity(StrEnum):
     FREE_DRIVE = "free_drive"  # hand guiding (FreeDrive)
 
 
+TCP = "tcp"  # PLC gateway (TCP/IP), PLC <-> robot over PROFINET
+OPCUA = "opcua"  # OPC UA server of the robot controller (no PLC)
+SIMULATOR = "sim"  # SRCI SDK simulator on this computer
+
+
 @dataclass
 class Target:
     """Where to connect to."""
@@ -174,9 +179,63 @@ class Target:
     port: int = 5000
     length: int = 256  # telegram length per direction = size of the PROFINET module
     simulator: bool = False  # SRCI SDK simulator behind a local gateway (private package srci_sdk_sim)
+    transport: str = TCP  # TCP or OPCUA (if not simulator)
+    # OPC UA: endpoint, NodeIds of the telegrams (PLC->RC written, RC->PLC read), optional login
+    opcua_endpoint: str = "opc.tcp://192.168.2.10:4840"
+    opcua_out: str = ""
+    opcua_in: str = ""
+    opcua_user: str = ""
+    opcua_password: str = ""  # never stored
     # LifeSign timeout [ms]: 50 is the spec default; the JAKA MiniCobo needs >= 300 (no LifeSign for
     # ~200 ms while it switches the drives off after a rejected command)
     lifesign_ms: int = 500
+
+    @property
+    def kind(self) -> str:
+        """TCP, OPCUA or SIMULATOR (one value for the selection in the UI)."""
+        return SIMULATOR if self.simulator else self.transport
+
+    @kind.setter
+    def kind(self, value: str) -> None:
+        self.simulator = value == SIMULATOR
+        if value in (TCP, OPCUA):
+            self.transport = value
+
+    def describe(self) -> str:
+        """Short text of the target for the status line."""
+        if self.simulator:
+            return "SDK simulator"
+        if self.transport == OPCUA:
+            return self.opcua_endpoint
+        return f"{self.host}:{self.port}"
+
+    def opcua_settings(self) -> dict[str, str]:
+        """OPC UA settings to keep for the next start (without the password)."""
+        return {"endpoint": self.opcua_endpoint, "out": self.opcua_out, "in": self.opcua_in,
+                "user": self.opcua_user}  # fmt: skip
+
+    def restore_opcua(self, data: Any) -> None:
+        """Takes stored :meth:`opcua_settings` (unknown or missing keys are ignored)."""
+        if not isinstance(data, dict):
+            return
+        for key, attr in (("endpoint", "opcua_endpoint"), ("out", "opcua_out"), ("in", "opcua_in"),
+                          ("user", "opcua_user")):  # fmt: skip
+            if isinstance(data.get(key), str):
+                setattr(self, attr, data[key])
+        if data.get("transport") in (TCP, OPCUA):
+            self.transport = data["transport"]
+
+
+def sdk_simulator_class() -> Any:
+    """``SdkSimulator`` of the private SDK package ``srci_sdk_sim`` (raises if it is not installed)."""
+    try:
+        # part of the private SRCI SDK (srci_py_harness/python), not of the client
+        from srci_sdk_sim.sdk import SdkSimulator
+    except ImportError as exc:
+        raise RuntimeError(
+            "SDK simulator not installed: pip install -e <SRCI SDK>/srci_py_harness/python"
+        ) from exc
+    return SdkSimulator
 
 
 @dataclass
@@ -334,7 +393,7 @@ class RobotService:
                      program_step=self._program_step, simulator=self._target.simulator, halted=self._halted,
                      tool=self.tool, frame=self.frame)  # fmt: skip
         t = self._target
-        s.target = "SDK simulator" if t.simulator else f"{t.host}:{t.port}"
+        s.target = t.describe()
         client = self._client
         if client is None:
             return s
@@ -434,13 +493,7 @@ class RobotService:
         if target.simulator:
             from srci.sim.gateway import PlcGatewaySimulator
 
-            try:
-                # part of the private SRCI SDK (srci_py_harness/python), not of the client
-                from srci_sdk_sim.sdk import SdkSimulator
-            except ImportError as exc:
-                raise RuntimeError(
-                    "SDK simulator not installed: pip install -e <SRCI SDK>/srci_py_harness/python"
-                ) from exc
+            SdkSimulator = sdk_simulator_class()
 
             sim = self._stack.enter_context(SdkSimulator())
             sim.set_move_cycles(100)  # simulated motions take about 1 s
@@ -448,6 +501,19 @@ class RobotService:
                 PlcGatewaySimulator(lambda telegram: sim.exchange(telegram, n), n, n)
             )
             transport: Transport = TcpTransport("127.0.0.1", gateway.port, n, n, response_timeout=0.5)
+        elif target.transport == OPCUA:
+            if not target.opcua_out or not target.opcua_in:
+                raise ValueError("OPC UA: NodeId of the telegram nodes missing")
+            transport = OpcUaTransport(
+                target.opcua_endpoint.strip(),
+                target.opcua_out.strip(),
+                target.opcua_in.strip(),
+                n,
+                n,
+                timeout=1.0,
+                username=target.opcua_user.strip() or None,
+                password=target.opcua_password or None,
+            )
         else:
             # the PLC answers within a few PLC cycles; a late answer closes the connection
             transport = TcpTransport(target.host, target.port, n, n, response_timeout=0.1)

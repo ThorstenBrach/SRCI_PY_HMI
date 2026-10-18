@@ -74,9 +74,16 @@ tabs or tablets see the same robot and the same program.
 
 ### Connecting
 
-1. Choose **Robot** or **Simulator**.
-2. For a robot: check **Gateway IP address**, **Port** and **Telegram length** (default from the
+1. Choose **PLC gateway**, **OPC UA** or **Simulator**.
+2. PLC gateway: check **Gateway IP address**, **Port** and **Telegram length** (default from the
    command line).
+   OPC UA (robot controller with its own OPC UA server, no PLC): enter the **Endpoint**
+   (`opc.tcp://<IP>:<port>`) and, if the controller needs it for writing, **User** and **Password**.
+   **Browse server** connects to the server and lists its variables that can carry a telegram
+   (ByteString or number array; switch off *Telegram candidates only* to see all). Take one node
+   with **PLC → RC** (written by the HMI, must be writable) and one with **RC → PLC** (read); the
+   telegram length is taken from the node. Endpoint, nodes and user are remembered, the password
+   is not. OPC UA is not yet tested on a real robot.
 3. Choose the **LifeSign timeout** (100 / 250 / 500 / 1000 ms or a free value). It is remembered.
    JAKA MiniCobo: at least 300 ms, 500 ms recommended.
 4. Tap **Connect**. After a few seconds the header shows the manufacturer and the *Robot* card the

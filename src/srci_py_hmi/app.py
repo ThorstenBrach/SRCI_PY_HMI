@@ -10,7 +10,7 @@ from pathlib import Path
 
 from srci_py_hmi.i18n import t
 from srci_py_hmi.model import Program
-from srci_py_hmi.robot import RobotService, Target
+from srci_py_hmi.robot import OPCUA, RobotService, Target
 
 log = logging.getLogger("srci_py_hmi")
 
@@ -28,6 +28,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--lifesign", type=int, default=None,
                    help="LifeSign timeout [ms] (default: the last value set in the UI, else 500)")  # fmt: skip
     p.add_argument("--simulator", action="store_true", help="preselect the SDK simulator")
+    p.add_argument("--opcua", metavar="ENDPOINT", default=None,
+                   help="preselect OPC UA: endpoint of the robot controller, e.g. opc.tcp://192.168.2.10:4840")  # fmt: skip
+    p.add_argument("--opcua-out", metavar="NODEID", default=None, help="OPC UA node of the PLC->RC telegram (written)")
+    p.add_argument("--opcua-in", metavar="NODEID", default=None, help="OPC UA node of the RC->PLC telegram (read)")
+    p.add_argument("--opcua-user", default=None, help="OPC UA user (password is asked in the UI)")
     p.add_argument("--native", action="store_true", help="own window instead of the browser (pywebview)")
     p.add_argument("--log", type=Path, default=None, help="log file")
     return p.parse_args(argv)
@@ -60,12 +65,21 @@ def main(argv: list[str] | None = None) -> None:
             lifesign_ms=args.lifesign or 500,
         ),
     )
+    target = ws.target
 
     @app.on_startup
     def restore_settings() -> None:
         # the LifeSign timeout set in the UI is kept for the next start (unless --lifesign is given)
         if args.lifesign is None:
             ws.target.lifesign_ms = int(app.storage.general.get("lifesign_ms", ws.target.lifesign_ms))
+        # OPC UA settings of the UI (endpoint, nodes, user; never the password), the command line wins
+        target.restore_opcua(app.storage.general.get("opcua"))
+        if args.opcua:
+            target.transport, target.opcua_endpoint = OPCUA, args.opcua
+        for attr, value in (("opcua_out", args.opcua_out), ("opcua_in", args.opcua_in),
+                            ("opcua_user", args.opcua_user)):  # fmt: skip
+            if value is not None:
+                setattr(target, attr, value)
 
     @ui.page("/")
     def index() -> None:
